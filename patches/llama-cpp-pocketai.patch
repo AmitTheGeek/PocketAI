@@ -1,0 +1,332 @@
+diff --git a/examples/llama.android/lib/build.gradle.kts b/examples/llama.android/lib/build.gradle.kts
+index ae95f41..afb0891 100644
+--- a/examples/llama.android/lib/build.gradle.kts
++++ b/examples/llama.android/lib/build.gradle.kts
+@@ -16,7 +16,7 @@ android {
+         consumerProguardFiles("consumer-rules.pro")
+ 
+         ndk {
+-             abiFilters += listOf("arm64-v8a", "x86_64")
++             abiFilters += listOf("arm64-v8a")
+         }
+         externalNativeBuild {
+             cmake {
+@@ -51,10 +51,6 @@ android {
+     }
+     kotlin {
+         jvmToolchain(17)
+-
+-        compileOptions {
+-            targetCompatibility = JavaVersion.VERSION_17
+-        }
+     }
+ 
+     packaging {
+@@ -72,7 +68,6 @@ android {
+ 
+ dependencies {
+     implementation(libs.androidx.core.ktx)
+-    implementation(libs.androidx.datastore.preferences)
+ 
+     testImplementation(libs.junit)
+     androidTestImplementation(libs.androidx.junit)
+diff --git a/examples/llama.android/lib/src/main/cpp/ai_chat.cpp b/examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+index ca6f717..7db6821 100644
+--- a/examples/llama.android/lib/src/main/cpp/ai_chat.cpp
++++ b/examples/llama.android/lib/src/main/cpp/ai_chat.cpp
+@@ -28,7 +28,7 @@ constexpr int   N_THREADS_MIN           = 2;
+ constexpr int   N_THREADS_MAX           = 4;
+ constexpr int   N_THREADS_HEADROOM      = 2;
+ 
+-constexpr int   DEFAULT_CONTEXT_SIZE    = 8192;
++constexpr int   DEFAULT_CONTEXT_SIZE    = 2048;
+ constexpr int   OVERFLOW_HEADROOM       = 4;
+ constexpr int   BATCH_SIZE              = 512;
+ constexpr float DEFAULT_SAMPLER_TEMP    = 0.3f;
+@@ -260,6 +260,10 @@ static std::vector<common_chat_msg> chat_msgs;
+ static llama_pos system_prompt_position;
+ static llama_pos current_position;
+ 
++static int context_token_capacity() {
++    return g_context ? (int) llama_n_ctx(g_context) : DEFAULT_CONTEXT_SIZE;
++}
++
+ static void reset_long_term_states(const bool clear_kv_cache = true) {
+     chat_msgs.clear();
+     system_prompt_position = 0;
+@@ -286,17 +290,27 @@ static void shift_context() {
+     LOGi("%s: Context shifting done! Current position: %d", __func__, current_position);
+ }
+ 
+-static std::string chat_add_and_format(const std::string &role, const std::string &content) {
++static std::string chat_format_message(
++        const std::string &role,
++        const std::string &content,
++        const bool add_to_history
++) {
+     common_chat_msg new_msg;
+     new_msg.role = role;
+     new_msg.content = content;
+     auto formatted = common_chat_format_single(
+-            g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ false);
+-    chat_msgs.push_back(new_msg);
+-    LOGi("%s: Formatted and added %s message: \n%s\n", __func__, role.c_str(), formatted.c_str());
++            g_chat_templates.get(), chat_msgs, new_msg, role == ROLE_USER, /* use_jinja */ true);
++    if (add_to_history) {
++        chat_msgs.push_back(new_msg);
++        LOGi("%s: Formatted and added %s message: \n%s\n", __func__, role.c_str(), formatted.c_str());
++    }
+     return formatted;
+ }
+ 
++static std::string chat_add_and_format(const std::string &role, const std::string &content) {
++    return chat_format_message(role, content, true);
++}
++
+ /**
+  * Completion loop's short-term states:
+  * - stop generation position
+@@ -313,6 +327,22 @@ static void reset_short_term_states() {
+     assistant_ss.str("");
+ }
+ 
++static void reset_to_system_prompt() {
++    reset_short_term_states();
++    common_sampler_reset(g_sampler);
++
++    if (system_prompt_position > 0 && !chat_msgs.empty() && chat_msgs.front().role == ROLE_SYSTEM) {
++        if (current_position > system_prompt_position) {
++            llama_memory_seq_rm(llama_get_memory(g_context), 0, system_prompt_position, current_position);
++        }
++        chat_msgs.resize(1);
++        current_position = system_prompt_position;
++        return;
++    }
++
++    reset_long_term_states();
++}
++
+ static int decode_tokens_in_batches(
+         llama_context *context,
+         common_batch &batch,
+@@ -327,7 +357,7 @@ static int decode_tokens_in_batches(
+         LOGv("%s: Preparing a batch size of %d starting at: %d", __func__, cur_batch_size, i);
+ 
+         // Shift context if current batch cannot fit into the context
+-        if (start_pos + i + cur_batch_size >= DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM) {
++        if (start_pos + i + cur_batch_size >= context_token_capacity() - OVERFLOW_HEADROOM) {
+             LOGw("%s: Current batch won't fit into context! Shifting...", __func__);
+             shift_context();
+         }
+@@ -381,7 +411,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt(
+     }
+ 
+     // Handle context overflow
+-    const int max_batch_size = DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM;
++    const int max_batch_size = context_token_capacity() - OVERFLOW_HEADROOM;
+     if ((int) system_tokens.size() > max_batch_size) {
+         LOGe("%s: System prompt too long for context! %d tokens, max: %d",
+              __func__, (int) system_tokens.size(), max_batch_size);
+@@ -399,6 +429,40 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt(
+     return 0;
+ }
+ 
++extern "C"
++JNIEXPORT jint JNICALL
++Java_com_arm_aichat_internal_InferenceEngineImpl_countPromptTokensNative(
++        JNIEnv *env,
++        jobject /*unused*/,
++        jstring juser_prompt
++) {
++    reset_to_system_prompt();
++
++    const auto *const user_prompt = env->GetStringUTFChars(juser_prompt, nullptr);
++    if (!user_prompt) {
++        return -1;
++    }
++
++    std::string formatted_user_prompt(user_prompt);
++    const bool has_chat_template = common_chat_templates_was_explicit(g_chat_templates.get());
++    if (has_chat_template) {
++        formatted_user_prompt = chat_format_message(ROLE_USER, user_prompt, false);
++    }
++    env->ReleaseStringUTFChars(juser_prompt, user_prompt);
++
++    const auto user_tokens = common_tokenize(g_context, formatted_user_prompt, has_chat_template, has_chat_template);
++    return system_prompt_position + (int) user_tokens.size();
++}
++
++extern "C"
++JNIEXPORT jint JNICALL
++Java_com_arm_aichat_internal_InferenceEngineImpl_contextWindowTokensNative(
++        JNIEnv * /*env*/,
++        jobject /*unused*/
++) {
++    return context_token_capacity();
++}
++
+ extern "C"
+ JNIEXPORT jint JNICALL
+ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
+@@ -407,8 +471,9 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
+         jstring juser_prompt,
+         jint n_predict
+ ) {
+-    // Reset short-term states
+-    reset_short_term_states();
++    // PocketAI is a one-shot summarizer. Keep the system prompt, but do not keep
++    // prior user/assistant turns between requests.
++    reset_to_system_prompt();
+ 
+     // Obtain and tokenize user prompt
+     const auto *const user_prompt = env->GetStringUTFChars(juser_prompt, nullptr);
+@@ -428,13 +493,12 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
+         LOGv("token: `%s`\t -> `%d`", common_token_to_piece(g_context, id).c_str(), id);
+     }
+ 
+-    // Ensure user prompt doesn't exceed the context size by truncating if necessary.
+     const int user_prompt_size = (int) user_tokens.size();
+-    const int max_batch_size = DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM;
+-    if (user_prompt_size > max_batch_size) {
+-        const int skipped_tokens = user_prompt_size - max_batch_size;
+-        user_tokens.resize(max_batch_size);
+-        LOGw("%s: User prompt too long! Skipped %d tokens!", __func__, skipped_tokens);
++    const int max_context_size = context_token_capacity() - OVERFLOW_HEADROOM;
++    if ((int) system_prompt_position + user_prompt_size + n_predict > max_context_size) {
++        LOGe("%s: User prompt too long for context! prompt=%d, reserve=%d, max=%d",
++             __func__, (int) system_prompt_position + user_prompt_size, n_predict, max_context_size);
++        return 3;
+     }
+ 
+     // Decode user tokens in batches
+@@ -445,7 +509,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
+ 
+     // Update position
+     current_position += user_prompt_size;
+-    stop_generation_position = current_position + user_prompt_size + n_predict;
++    stop_generation_position = current_position + n_predict;
+     return 0;
+ }
+ 
+@@ -490,7 +554,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
+         jobject /*unused*/
+ ) {
+     // Infinite text generation via context shifting
+-    if (current_position >= DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM) {
++    if (current_position >= context_token_capacity() - OVERFLOW_HEADROOM) {
+         LOGw("%s: Context full! Shifting...", __func__);
+         shift_context();
+     }
+diff --git a/examples/llama.android/lib/src/main/java/com/arm/aichat/InferenceEngine.kt b/examples/llama.android/lib/src/main/java/com/arm/aichat/InferenceEngine.kt
+index 26c1668..96878e8 100644
+--- a/examples/llama.android/lib/src/main/java/com/arm/aichat/InferenceEngine.kt
++++ b/examples/llama.android/lib/src/main/java/com/arm/aichat/InferenceEngine.kt
+@@ -30,6 +30,22 @@ interface InferenceEngine {
+      */
+     fun sendUserPrompt(message: String, predictLength: Int = DEFAULT_PREDICT_LENGTH): Flow<String>
+ 
++    /**
++     * Counts the complete formatted prompt, including the retained system prompt and the
++     * user message formatted by the model chat template.
++     */
++    suspend fun countPromptTokens(message: String): Int
++
++    /**
++     * Returns the configured native context window.
++     */
++    suspend fun contextWindowTokens(): Int
++
++    /**
++     * Requests cancellation of the current token generation loop.
++     */
++    fun cancelGeneration()
++
+     /**
+      * Runs a benchmark with the specified parameters.
+      */
+diff --git a/examples/llama.android/lib/src/main/java/com/arm/aichat/internal/InferenceEngineImpl.kt b/examples/llama.android/lib/src/main/java/com/arm/aichat/internal/InferenceEngineImpl.kt
+index a293796..a1484d8 100644
+--- a/examples/llama.android/lib/src/main/java/com/arm/aichat/internal/InferenceEngineImpl.kt
++++ b/examples/llama.android/lib/src/main/java/com/arm/aichat/internal/InferenceEngineImpl.kt
+@@ -100,6 +100,12 @@ internal class InferenceEngineImpl private constructor(
+     @FastNative
+     private external fun processUserPrompt(userPrompt: String, predictLength: Int): Int
+ 
++    @FastNative
++    private external fun countPromptTokensNative(userPrompt: String): Int
++
++    @FastNative
++    private external fun contextWindowTokensNative(): Int
++
+     @FastNative
+     private external fun generateNextToken(): String?
+ 
+@@ -188,9 +194,9 @@ internal class InferenceEngineImpl private constructor(
+      *
+      * TODO-han.yin: return error code if system prompt not correct processed?
+      */
+-    override suspend fun setSystemPrompt(prompt: String) =
++    override suspend fun setSystemPrompt(systemPrompt: String) =
+         withContext(llamaDispatcher) {
+-            require(prompt.isNotBlank()) { "Cannot process empty system prompt!" }
++            require(systemPrompt.isNotBlank()) { "Cannot process empty system prompt!" }
+             check(_readyForSystemPrompt) { "System prompt must be set ** RIGHT AFTER ** model loaded!" }
+             check(_state.value is InferenceEngine.State.ModelReady) {
+                 "Cannot process system prompt in ${_state.value.javaClass.simpleName}!"
+@@ -199,7 +205,7 @@ internal class InferenceEngineImpl private constructor(
+             Log.i(TAG, "Sending system prompt...")
+             _readyForSystemPrompt = false
+             _state.value = InferenceEngine.State.ProcessingSystemPrompt
+-            processSystemPrompt(prompt).let { result ->
++            processSystemPrompt(systemPrompt).let { result ->
+                 if (result != 0) {
+                     RuntimeException("Failed to process system prompt: $result").also {
+                         _state.value = InferenceEngine.State.Error(it)
+@@ -226,12 +232,15 @@ internal class InferenceEngineImpl private constructor(
+         try {
+             Log.i(TAG, "Sending user prompt...")
+             _readyForSystemPrompt = false
++            _cancelGeneration = false
+             _state.value = InferenceEngine.State.ProcessingUserPrompt
+ 
+             processUserPrompt(message, predictLength).let { result ->
+                 if (result != 0) {
+-                    Log.e(TAG, "Failed to process user prompt: $result")
+-                    return@flow
++                    val exception = RuntimeException("Failed to process user prompt: $result")
++                    Log.e(TAG, exception.message ?: "Failed to process user prompt")
++                    _state.value = InferenceEngine.State.Error(exception)
++                    throw exception
+                 }
+             }
+ 
+@@ -259,6 +268,29 @@ internal class InferenceEngineImpl private constructor(
+         }
+     }.flowOn(llamaDispatcher)
+ 
++    override suspend fun countPromptTokens(message: String): Int =
++        withContext(llamaDispatcher) {
++            require(message.isNotEmpty()) { "Cannot count an empty prompt." }
++            check(_state.value is InferenceEngine.State.ModelReady) {
++                "Cannot count prompt tokens in ${_state.value.javaClass.simpleName}."
++            }
++            countPromptTokensNative(message).also { result ->
++                check(result >= 0) { "Failed to count prompt tokens: $result" }
++            }
++        }
++
++    override suspend fun contextWindowTokens(): Int =
++        withContext(llamaDispatcher) {
++            check(_state.value is InferenceEngine.State.ModelReady) {
++                "Cannot read context window in ${_state.value.javaClass.simpleName}."
++            }
++            contextWindowTokensNative()
++        }
++
++    override fun cancelGeneration() {
++        _cancelGeneration = true
++    }
++
+     /**
+      * Benchmark the model
+      */

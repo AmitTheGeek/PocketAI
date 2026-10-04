@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+build/
+app/build/
+**/.cxx/
+**/build/
+*.gguf
+*.iml
+local.properties
+outputs/*.apk
+work/
+*.zip
+*.tar.gz
