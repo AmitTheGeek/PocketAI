@@ -152,3 +152,8 @@ Status as of October 4, 2026: the app has run offline-style local summaries on t
 - [ ] Pending: Cancel during refinement on-device and verify generation stops.
 - [ ] Pending: Immediately start a fresh request after refinement cancellation and verify no stale text appears.
 - [ ] Pending: Paste oversized input and verify the app explains the token-budget issue without truncating the source.
+- [ ] Pending: Generate a summary offline, save it, open it from History, and verify the saved source and summary match the completed request.
+- [ ] Pending: Force-stop and relaunch the app, then verify the saved summary remains accessible from History.
+- [ ] Pending: Open History without importing or loading a model and verify saved summaries can still be browsed.
+- [ ] Pending: Delete a saved summary, force-stop and relaunch, and verify it stays deleted.
+- [ ] Pending: Save a result that shows a structural-format warning and verify the warning is retained in the saved detail.

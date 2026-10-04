@@ -10,7 +10,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.arm.aichat.gguf.GgufMetadataReader
-import com.pocketai.offline.inference.LlamaCppSummarizationEngine
+import com.pocketai.offline.PocketAiApplication
+import com.pocketai.offline.PocketAiContainer
+import com.pocketai.offline.history.NewSavedSummary
+import com.pocketai.offline.history.SavedSummary
+import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryGenerationCoordinator
 import com.pocketai.offline.summarization.SummaryGenerationEvent
@@ -23,6 +27,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -51,13 +56,72 @@ sealed interface GenerationState {
     data class Failed(val message: String) : GenerationState
 }
 
+sealed interface PocketAiDestination {
+    data object Summarizer : PocketAiDestination
+    data object History : PocketAiDestination
+    data class Detail(val summaryId: Long) : PocketAiDestination
+}
+
+sealed interface HistoryUiState {
+    data object Loading : HistoryUiState
+    data class Loaded(val items: List<SavedSummary>) : HistoryUiState
+    data class Error(val message: String) : HistoryUiState
+}
+
+sealed interface DetailUiState {
+    data object Idle : DetailUiState
+    data object Loading : DetailUiState
+    data class Loaded(
+        val summary: SavedSummary,
+        val isDeleting: Boolean = false,
+        val deleteError: String? = null,
+    ) : DetailUiState
+    data object NotFound : DetailUiState
+    data class Error(val message: String) : DetailUiState
+}
+
+sealed interface SaveState {
+    data object Idle : SaveState
+    data class Saving(val resultId: Long) : SaveState
+    data class Saved(val resultId: Long, val savedSummaryId: Long) : SaveState
+    data class Error(val resultId: Long, val message: String) : SaveState
+}
+
+data class CompletedSummarySnapshot(
+    val resultId: Long,
+    val sourceText: String,
+    val summaryText: String,
+    val durationMs: Long,
+    val refinementOccurred: Boolean,
+    val formatWarning: String?,
+    val modelName: String?,
+    val modelSizeBytes: Long?,
+) {
+    fun toNewSavedSummary(createdAtEpochMs: Long): NewSavedSummary =
+        NewSavedSummary(
+            sourceText = sourceText,
+            summaryText = summaryText,
+            createdAtEpochMs = createdAtEpochMs,
+            durationMs = durationMs,
+            refinementOccurred = refinementOccurred,
+            formatWarning = formatWarning,
+            modelName = modelName,
+            modelSizeBytes = modelSizeBytes
+        )
+}
+
 data class PocketAiUiState(
+    val destination: PocketAiDestination = PocketAiDestination.Summarizer,
     val modelReadiness: ModelReadiness = ModelReadiness.NoModel,
     val generationState: GenerationState = GenerationState.Idle,
     val inputText: String = SAMPLE_PARAGRAPH,
     val outputText: String = "",
     val elapsedMs: Long = 0L,
     val formatWarning: String? = null,
+    val completedSummary: CompletedSummarySnapshot? = null,
+    val saveState: SaveState = SaveState.Idle,
+    val historyState: HistoryUiState = HistoryUiState.Loading,
+    val detailState: DetailUiState = DetailUiState.Idle,
 ) {
     val model: ImportedModel?
         get() = (modelReadiness as? ModelReadiness.Ready)?.model
@@ -89,6 +153,26 @@ data class PocketAiUiState(
     val warningMessage: String?
         get() = formatWarning
 
+    val saveMessage: String?
+        get() = when (val state = saveState) {
+            is SaveState.Saving -> if (state.resultId == completedSummary?.resultId) {
+                "Saving summary..."
+            } else {
+                null
+            }
+            is SaveState.Saved -> if (state.resultId == completedSummary?.resultId) {
+                "Summary saved."
+            } else {
+                null
+            }
+            is SaveState.Error -> if (state.resultId == completedSummary?.resultId) {
+                state.message
+            } else {
+                null
+            }
+            SaveState.Idle -> null
+        }
+
     val isGenerating: Boolean
         get() = generationState.isActive
 
@@ -102,23 +186,90 @@ data class PocketAiUiState(
         get() = modelReadiness is ModelReadiness.Ready &&
             inputText.isNotBlank() &&
             !isBusy
+
+    val canSave: Boolean
+        get() {
+            val snapshot = completedSummary ?: return false
+            if (generationState !is GenerationState.Completed) return false
+            return when (val state = saveState) {
+                is SaveState.Saving -> state.resultId != snapshot.resultId
+                is SaveState.Saved -> state.resultId != snapshot.resultId
+                is SaveState.Error,
+                SaveState.Idle -> true
+            }
+        }
 }
 
 class MainViewModel(
     application: Application,
-    private val engine: SummarizationEngine = LlamaCppSummarizationEngine(application),
+    private val engine: SummarizationEngine,
+    private val historyRepository: SummaryHistoryRepository,
+    private val nowEpochMs: () -> Long = { System.currentTimeMillis() },
+    initialState: PocketAiUiState = PocketAiUiState(),
 ) : AndroidViewModel(application) {
-    private val _uiState = MutableStateFlow(PocketAiUiState())
+    private val _uiState = MutableStateFlow(initialState)
     val uiState: StateFlow<PocketAiUiState> = _uiState.asStateFlow()
 
     private val appContext = application.applicationContext
     private val summaryCoordinator = SummaryGenerationCoordinator(engine)
     private var summaryJob: Job? = null
     private var importJob: Job? = null
+    private var detailJob: Job? = null
     private var activeSummaryRequestId: Long = 0L
+
+    init {
+        observeHistory()
+    }
 
     fun updateInput(text: String) {
         _uiState.update { it.copy(inputText = text) }
+    }
+
+    fun openSummarizer() {
+        detailJob?.cancel()
+        _uiState.update {
+            it.copy(
+                destination = PocketAiDestination.Summarizer,
+                detailState = DetailUiState.Idle
+            )
+        }
+    }
+
+    fun openHistory() {
+        detailJob?.cancel()
+        _uiState.update {
+            it.copy(
+                destination = PocketAiDestination.History,
+                detailState = DetailUiState.Idle
+            )
+        }
+    }
+
+    fun openSummaryDetail(summaryId: Long) {
+        detailJob?.cancel()
+        _uiState.update {
+            it.copy(
+                destination = PocketAiDestination.Detail(summaryId),
+                detailState = DetailUiState.Loading
+            )
+        }
+        detailJob = viewModelScope.launch {
+            historyRepository.observeSummary(summaryId)
+                .catch { throwable ->
+                    updateDetailIfCurrent(summaryId) {
+                        DetailUiState.Error(throwable.userMessage("Unable to load saved summary"))
+                    }
+                }
+                .collect { summary ->
+                    updateDetailIfCurrent(summaryId) {
+                        if (summary == null) {
+                            DetailUiState.NotFound
+                        } else {
+                            DetailUiState.Loaded(summary)
+                        }
+                    }
+                }
+        }
     }
 
     fun importModel(uri: Uri) {
@@ -150,7 +301,9 @@ class MainViewModel(
                         generationState = GenerationState.Idle,
                         outputText = "",
                         elapsedMs = 0L,
-                        formatWarning = null
+                        formatWarning = null,
+                        completedSummary = null,
+                        saveState = SaveState.Idle
                     )
                 }
             }.onFailure { throwable ->
@@ -184,14 +337,18 @@ class MainViewModel(
         }
 
         val requestId = ++activeSummaryRequestId
+        val model = current.model
         summaryJob = viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
+            var refinementOccurred = false
             _uiState.update {
                 it.copy(
                     generationState = GenerationState.Generating,
                     outputText = "",
                     elapsedMs = 0L,
-                    formatWarning = null
+                    formatWarning = null,
+                    completedSummary = null,
+                    saveState = SaveState.Idle
                 )
             }
 
@@ -217,6 +374,7 @@ class MainViewModel(
                             }
                         }
                         SummaryGenerationEvent.Refining -> {
+                            refinementOccurred = true
                             updateIfCurrent(requestId) {
                                 it.copy(
                                     generationState = GenerationState.Refining,
@@ -236,17 +394,30 @@ class MainViewModel(
                         }
                     }
                 }
+                val finalElapsed = SystemClock.elapsedRealtime() - startedAt
                 updateIfCurrent(requestId) {
                     it.copy(
                         generationState = GenerationState.Completed,
-                        elapsedMs = SystemClock.elapsedRealtime() - startedAt
+                        elapsedMs = finalElapsed,
+                        completedSummary = CompletedSummarySnapshot(
+                            resultId = requestId,
+                            sourceText = paragraph,
+                            summaryText = it.outputText,
+                            durationMs = finalElapsed,
+                            refinementOccurred = refinementOccurred,
+                            formatWarning = it.formatWarning,
+                            modelName = model?.name,
+                            modelSizeBytes = model?.sizeBytes
+                        )
                     )
                 }
             } catch (_: CancellationException) {
                 updateIfCurrent(requestId) {
                     it.copy(
                         generationState = GenerationState.Cancelled,
-                        elapsedMs = SystemClock.elapsedRealtime() - startedAt
+                        elapsedMs = SystemClock.elapsedRealtime() - startedAt,
+                        completedSummary = null,
+                        saveState = SaveState.Idle
                     )
                 }
             } catch (throwable: Throwable) {
@@ -255,7 +426,9 @@ class MainViewModel(
                         generationState = GenerationState.Failed(
                             throwable.userMessage("Summarization failed")
                         ),
-                        elapsedMs = SystemClock.elapsedRealtime() - startedAt
+                        elapsedMs = SystemClock.elapsedRealtime() - startedAt,
+                        completedSummary = null,
+                        saveState = SaveState.Idle
                     )
                 }
             } finally {
@@ -273,9 +446,84 @@ class MainViewModel(
         summaryJob?.cancel(CancellationException("User cancelled summarization."))
     }
 
+    fun saveCurrentSummary() {
+        val state = _uiState.value
+        val snapshot = state.completedSummary ?: return
+        if (!state.canSave) return
+
+        _uiState.update {
+            if (it.completedSummary?.resultId == snapshot.resultId) {
+                it.copy(saveState = SaveState.Saving(snapshot.resultId))
+            } else {
+                it
+            }
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                historyRepository.save(snapshot.toNewSavedSummary(nowEpochMs()))
+            }.onSuccess { savedSummaryId ->
+                _uiState.update {
+                    if (it.completedSummary?.resultId == snapshot.resultId) {
+                        it.copy(
+                            saveState = SaveState.Saved(
+                                resultId = snapshot.resultId,
+                                savedSummaryId = savedSummaryId
+                            )
+                        )
+                    } else {
+                        it
+                    }
+                }
+            }.onFailure { throwable ->
+                _uiState.update {
+                    if (it.completedSummary?.resultId == snapshot.resultId) {
+                        it.copy(
+                            saveState = SaveState.Error(
+                                resultId = snapshot.resultId,
+                                message = throwable.userMessage("Save failed")
+                            )
+                        )
+                    } else {
+                        it
+                    }
+                }
+            }
+        }
+    }
+
+    fun deleteSelectedSummary() {
+        val detail = _uiState.value.detailState as? DetailUiState.Loaded ?: return
+        if (detail.isDeleting) return
+        val summaryId = detail.summary.id
+
+        updateDetailIfCurrent(summaryId) {
+            detail.copy(isDeleting = true, deleteError = null)
+        }
+
+        viewModelScope.launch {
+            runCatching {
+                historyRepository.delete(summaryId)
+            }.onSuccess {
+                openHistory()
+            }.onFailure { throwable ->
+                updateDetailIfCurrent(summaryId) { current ->
+                    when (current) {
+                        is DetailUiState.Loaded -> current.copy(
+                            isDeleting = false,
+                            deleteError = throwable.userMessage("Delete failed")
+                        )
+                        else -> current
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCleared() {
         summaryJob?.cancel()
         importJob?.cancel()
+        detailJob?.cancel()
         Thread {
             runBlocking {
                 engine.close()
@@ -285,6 +533,26 @@ class MainViewModel(
             start()
         }
         super.onCleared()
+    }
+
+    private fun observeHistory() {
+        viewModelScope.launch {
+            historyRepository.observeSummaries()
+                .catch { throwable ->
+                    _uiState.update {
+                        it.copy(
+                            historyState = HistoryUiState.Error(
+                                throwable.userMessage("Unable to load history")
+                            )
+                        )
+                    }
+                }
+                .collect { summaries ->
+                    _uiState.update {
+                        it.copy(historyState = HistoryUiState.Loaded(summaries))
+                    }
+                }
+        }
     }
 
     private suspend fun copyModelToPrivateStorage(uri: Uri): File = withContext(Dispatchers.IO) {
@@ -348,12 +616,32 @@ class MainViewModel(
         }
     }
 
+    private inline fun updateDetailIfCurrent(
+        summaryId: Long,
+        crossinline transform: (DetailUiState) -> DetailUiState,
+    ) {
+        _uiState.update { current ->
+            val destination = current.destination as? PocketAiDestination.Detail
+            if (destination?.summaryId == summaryId) {
+                current.copy(detailState = transform(current.detailState))
+            } else {
+                current
+            }
+        }
+    }
+
     companion object {
         fun factory(application: Application): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return MainViewModel(application) as T
+                    val container = (application as? PocketAiApplication)?.container
+                        ?: PocketAiContainer(application)
+                    return MainViewModel(
+                        application = application,
+                        engine = container.summarizationEngine,
+                        historyRepository = container.historyRepository
+                    ) as T
                 }
             }
 

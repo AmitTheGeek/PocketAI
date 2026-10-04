@@ -13,16 +13,25 @@ if [ ! -d "$LLAMA_DIR/.git" ]; then
   git clone "$LLAMA_URL" "$LLAMA_DIR"
 fi
 
-git -C "$LLAMA_DIR" fetch --tags origin "$LLAMA_COMMIT"
+if ! git -C "$LLAMA_DIR" cat-file -e "$LLAMA_COMMIT^{commit}"; then
+  git -C "$LLAMA_DIR" fetch --tags origin "$LLAMA_COMMIT"
+fi
+
 git -C "$LLAMA_DIR" checkout "$LLAMA_COMMIT"
 
-if ! git -C "$LLAMA_DIR" apply --check "$PATCH_FILE"; then
-  if git -C "$LLAMA_DIR" diff --quiet; then
-    echo "Patch does not apply cleanly and no local diff is present." >&2
-    exit 1
+if ! git -C "$LLAMA_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
+  current_patch="$(mktemp)"
+  trap 'rm -f "$current_patch"' EXIT
+  git -C "$LLAMA_DIR" diff > "$current_patch"
+
+  if git -C "$LLAMA_DIR" apply --reverse --check "$PATCH_FILE" 2>/dev/null &&
+    cmp -s "$current_patch" "$PATCH_FILE"; then
+    echo "Patch is already applied exactly; leaving existing llama.cpp checkout in place."
+    exit 0
   fi
-  echo "Patch already appears to be applied; leaving existing llama.cpp checkout in place."
-  exit 0
+
+  echo "Patch does not apply cleanly, or local llama.cpp changes differ from $PATCH_FILE." >&2
+  exit 1
 fi
 
 git -C "$LLAMA_DIR" apply "$PATCH_FILE"
