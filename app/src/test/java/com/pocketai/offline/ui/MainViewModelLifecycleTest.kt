@@ -265,7 +265,7 @@ class MainViewModelLifecycleTest {
     }
 
     private fun viewModel(
-        engine: RecordingEngine = RecordingEngine(),
+        engine: SummarizationEngine = RecordingEngine(),
         modelImporter: ModelImporter = QueueModelImporter(),
         repository: SummaryHistoryRepository = FakeHistoryRepository(),
         readyModel: Boolean,
