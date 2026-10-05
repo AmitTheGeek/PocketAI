@@ -5,6 +5,7 @@ import com.arm.aichat.AiChat
 import com.arm.aichat.InferenceEngine
 import com.pocketai.offline.summarization.SummaryAttempt
 import java.io.File
+import kotlin.LazyThreadSafetyMode.SYNCHRONIZED
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -25,6 +26,7 @@ interface SummarizationEngine {
     suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int
     fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String>
     fun cancel()
+    suspend fun unloadModel()
     suspend fun close()
 }
 
@@ -36,15 +38,23 @@ class LlamaCppSummarizationEngine(
     context: Context,
     @OptIn(ExperimentalCoroutinesApi::class)
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
+    engineProvider: () -> InferenceEngine = {
+        AiChat.getInferenceEngine(context.applicationContext)
+    },
 ) : SummarizationEngine {
-    private val appContext = context.applicationContext
     private val operationLock = Mutex()
-    private val llamaEngine: InferenceEngine by lazy { AiChat.getInferenceEngine(appContext) }
+    private val llamaEngineHolder = lazy(SYNCHRONIZED, engineProvider)
     private var loadedModelPath: String? = null
 
     override var contextWindowTokens: Int = CONTEXT_WINDOW_TOKENS
         private set
     override val maxGeneratedTokens: Int = MAX_SUMMARY_TOKENS
+
+    private val isEngineInitialized: Boolean
+        get() = llamaEngineHolder.isInitialized()
+
+    private val llamaEngine: InferenceEngine
+        get() = llamaEngineHolder.value
 
     override suspend fun loadModel(modelFile: File) = withContext(dispatcher) {
         operationLock.withLock {
@@ -52,18 +62,22 @@ class LlamaCppSummarizationEngine(
                 "Model file is not readable: ${modelFile.absolutePath}"
             }
 
-            val engine = awaitInitializedEngine()
+            val engine = awaitInitializedEngineForLoad()
             if (loadedModelPath == modelFile.absolutePath) return@withLock
 
-            if (loadedModelPath != null) {
-                runCatching { engine.cleanUp() }
-                loadedModelPath = null
-            }
+            unloadCurrentModelIfNeeded(engine)
 
-            engine.loadModel(modelFile.absolutePath)
-            engine.setSystemPrompt(SYSTEM_PROMPT)
-            contextWindowTokens = engine.contextWindowTokens()
-            loadedModelPath = modelFile.absolutePath
+            try {
+                engine.loadModel(modelFile.absolutePath)
+                engine.setSystemPrompt(SYSTEM_PROMPT)
+                contextWindowTokens = engine.contextWindowTokens()
+                loadedModelPath = modelFile.absolutePath
+            } catch (throwable: Throwable) {
+                loadedModelPath = null
+                contextWindowTokens = CONTEXT_WINDOW_TOKENS
+                resetAfterLoadFailure(engine)
+                throw throwable
+            }
         }
     }
 
@@ -90,10 +104,23 @@ class LlamaCppSummarizationEngine(
     }.flowOn(dispatcher)
 
     override fun cancel() {
-        llamaEngine.cancelGeneration()
+        if (isEngineInitialized) {
+            llamaEngine.cancelGeneration()
+        }
+    }
+
+    override suspend fun unloadModel() {
+        if (!isEngineInitialized) return
+        operationLock.withLock {
+            val engine = llamaEngine
+            unloadCurrentModelIfNeeded(engine)
+            contextWindowTokens = CONTEXT_WINDOW_TOKENS
+            loadedModelPath = null
+        }
     }
 
     override suspend fun close() {
+        if (!isEngineInitialized) return
         operationLock.withLock {
             withContext(Dispatchers.IO) {
                 runCatching { llamaEngine.destroy() }
@@ -121,6 +148,46 @@ class LlamaCppSummarizationEngine(
             else -> throw IllegalStateException(
                 "Inference engine is busy: ${state.javaClass.simpleName}"
             )
+        }
+    }
+
+    private suspend fun awaitInitializedEngineForLoad(): InferenceEngine {
+        val engine = llamaEngine
+        return when (val state = engine.state.value) {
+            is InferenceEngine.State.Error -> {
+                resetAfterLoadFailure(engine)
+                engine
+            }
+            is InferenceEngine.State.Uninitialized,
+            is InferenceEngine.State.Initializing -> {
+                when (val ready = engine.state.filter {
+                    it is InferenceEngine.State.Initialized || it is InferenceEngine.State.Error
+                }.first()) {
+                    is InferenceEngine.State.Error -> {
+                        resetAfterLoadFailure(engine)
+                        engine
+                    }
+                    else -> engine
+                }
+            }
+            is InferenceEngine.State.Initialized,
+            is InferenceEngine.State.ModelReady -> engine
+            else -> throw IllegalStateException(
+                "Inference engine is busy: ${state.javaClass.simpleName}"
+            )
+        }
+    }
+
+    private fun unloadCurrentModelIfNeeded(engine: InferenceEngine) {
+        if (loadedModelPath == null && engine.state.value !is InferenceEngine.State.ModelReady) return
+        runCatching { engine.cleanUp() }
+        loadedModelPath = null
+        contextWindowTokens = CONTEXT_WINDOW_TOKENS
+    }
+
+    private fun resetAfterLoadFailure(engine: InferenceEngine) {
+        if (engine.state.value is InferenceEngine.State.Error) {
+            runCatching { engine.cleanUp() }
         }
     }
 

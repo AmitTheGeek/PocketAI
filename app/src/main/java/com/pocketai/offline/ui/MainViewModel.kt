@@ -1,27 +1,23 @@
 package com.pocketai.offline.ui
 
 import android.app.Application
-import android.database.Cursor
 import android.net.Uri
 import android.os.SystemClock
-import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.arm.aichat.gguf.GgufMetadataReader
 import com.pocketai.offline.PocketAiApplication
 import com.pocketai.offline.PocketAiContainer
 import com.pocketai.offline.history.NewSavedSummary
 import com.pocketai.offline.history.SavedSummary
 import com.pocketai.offline.history.SummaryHistoryRepository
+import com.pocketai.offline.inference.ImportedModelFile
+import com.pocketai.offline.inference.ModelImporter
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryGenerationCoordinator
 import com.pocketai.offline.summarization.SummaryGenerationEvent
-import java.io.File
-import java.io.FileOutputStream
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,8 +26,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 
 data class ImportedModel(
     val name: String,
@@ -203,6 +197,7 @@ data class PocketAiUiState(
 class MainViewModel(
     application: Application,
     private val engine: SummarizationEngine,
+    private val modelImporter: ModelImporter,
     private val historyRepository: SummaryHistoryRepository,
     private val nowEpochMs: () -> Long = { System.currentTimeMillis() },
     initialState: PocketAiUiState = PocketAiUiState(),
@@ -210,7 +205,6 @@ class MainViewModel(
     private val _uiState = MutableStateFlow(initialState)
     val uiState: StateFlow<PocketAiUiState> = _uiState.asStateFlow()
 
-    private val appContext = application.applicationContext
     private val summaryCoordinator = SummaryGenerationCoordinator(engine)
     private var summaryJob: Job? = null
     private var importJob: Job? = null
@@ -272,11 +266,26 @@ class MainViewModel(
         }
     }
 
+    fun navigateBack(): Boolean {
+        return when (_uiState.value.destination) {
+            is PocketAiDestination.Detail -> {
+                openHistory()
+                true
+            }
+            PocketAiDestination.History -> {
+                openSummarizer()
+                true
+            }
+            PocketAiDestination.Summarizer -> false
+        }
+    }
+
     fun importModel(uri: Uri) {
         if (!_uiState.value.canImport) return
 
         importJob?.cancel()
         importJob = viewModelScope.launch {
+            var importedModel: ImportedModelFile? = null
             _uiState.update {
                 it.copy(
                     modelReadiness = ModelReadiness.Importing,
@@ -285,16 +294,16 @@ class MainViewModel(
                 )
             }
 
-            runCatching {
-                val modelFile = copyModelToPrivateStorage(uri)
+            try {
+                val modelFile = modelImporter.import(uri).also { importedModel = it }
                 _uiState.update { it.copy(modelReadiness = ModelReadiness.Loading) }
-                engine.loadModel(modelFile)
-                ImportedModel(
-                    name = modelFile.name,
-                    sizeBytes = modelFile.length(),
-                    path = modelFile.absolutePath
+                engine.loadModel(modelFile.file)
+                val model = ImportedModel(
+                    name = modelFile.displayName,
+                    sizeBytes = modelFile.file.length(),
+                    path = modelFile.file.absolutePath
                 )
-            }.onSuccess { model ->
+                modelImporter.deleteObsoleteModels(model.path)
                 _uiState.update {
                     it.copy(
                         modelReadiness = ModelReadiness.Ready(model),
@@ -306,7 +315,11 @@ class MainViewModel(
                         saveState = SaveState.Idle
                     )
                 }
-            }.onFailure { throwable ->
+            } catch (throwable: CancellationException) {
+                importedModel?.let { runCatching { modelImporter.deleteImportedFile(it.file) } }
+                throw throwable
+            } catch (throwable: Throwable) {
+                importedModel?.let { runCatching { modelImporter.deleteImportedFile(it.file) } }
                 _uiState.update {
                     it.copy(
                         modelReadiness = ModelReadiness.ModelError(
@@ -505,7 +518,7 @@ class MainViewModel(
             runCatching {
                 historyRepository.delete(summaryId)
             }.onSuccess {
-                openHistory()
+                openHistoryIfStillViewing(summaryId)
             }.onFailure { throwable ->
                 updateDetailIfCurrent(summaryId) { current ->
                     when (current) {
@@ -521,17 +534,12 @@ class MainViewModel(
     }
 
     override fun onCleared() {
+        if (summaryJob?.isActive == true) {
+            engine.cancel()
+        }
         summaryJob?.cancel()
         importJob?.cancel()
         detailJob?.cancel()
-        Thread {
-            runBlocking {
-                engine.close()
-            }
-        }.apply {
-            name = "PocketAI-native-cleanup"
-            start()
-        }
         super.onCleared()
     }
 
@@ -553,52 +561,6 @@ class MainViewModel(
                     }
                 }
         }
-    }
-
-    private suspend fun copyModelToPrivateStorage(uri: Uri): File = withContext(Dispatchers.IO) {
-        val reader = GgufMetadataReader.create()
-        require(reader.ensureSourceFileFormat(appContext, uri)) { "Selected file is not a GGUF model." }
-
-        val displayName = appContext.contentResolver.displayName(uri)
-            ?: "model-${System.currentTimeMillis()}.gguf"
-        val safeName = displayName.toSafeModelFileName()
-        val modelsDir = File(appContext.filesDir, MODELS_DIR).also { it.mkdirs() }
-        val destination = File(modelsDir, safeName)
-        val temp = File.createTempFile("import-", ".gguf.tmp", modelsDir)
-
-        try {
-            appContext.contentResolver.openInputStream(uri).use { input ->
-                requireNotNull(input) { "Unable to open selected model." }
-                FileOutputStream(temp).use { output -> input.copyTo(output) }
-            }
-            if (destination.exists()) destination.delete()
-            check(temp.renameTo(destination)) { "Unable to finish model copy." }
-            destination
-        } finally {
-            if (temp.exists()) temp.delete()
-        }
-    }
-
-    private fun android.content.ContentResolver.displayName(uri: Uri): String? {
-        val cursor: Cursor? = query(
-            uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null
-        )
-        return cursor?.use {
-            if (it.moveToFirst()) {
-                it.getString(it.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
-            } else {
-                null
-            }
-        }
-    }
-
-    private fun String.toSafeModelFileName(): String {
-        val withExtension = if (endsWith(".gguf", ignoreCase = true)) this else "$this.gguf"
-        return withExtension.replace(Regex("[^A-Za-z0-9._-]"), "_")
     }
 
     private fun Throwable.userMessage(prefix: String): String =
@@ -630,6 +592,23 @@ class MainViewModel(
         }
     }
 
+    private fun openHistoryIfStillViewing(summaryId: Long) {
+        var shouldCancelDetailJob = false
+        _uiState.update { current ->
+            val destination = current.destination as? PocketAiDestination.Detail
+            if (destination?.summaryId == summaryId) {
+                shouldCancelDetailJob = true
+                current.copy(
+                    destination = PocketAiDestination.History,
+                    detailState = DetailUiState.Idle
+                )
+            } else {
+                current
+            }
+        }
+        if (shouldCancelDetailJob) detailJob?.cancel()
+    }
+
     companion object {
         fun factory(application: Application): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -640,12 +619,11 @@ class MainViewModel(
                     return MainViewModel(
                         application = application,
                         engine = container.summarizationEngine,
+                        modelImporter = container.modelImporter,
                         historyRepository = container.historyRepository
                     ) as T
                 }
             }
-
-        private const val MODELS_DIR = "models"
     }
 }
 

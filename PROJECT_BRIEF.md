@@ -32,4 +32,6 @@ PocketAI is an offline Android summarisation prototype for situations where conn
 
 On October 4, 2026, the prototype was installed and run on the connected OnePlus 8 Pro. Offline summary runs took about 4-6 seconds. Initial cancellation followed by a fresh request passed on-device.
 
-The structural validator, one-retry coordinator, and Room-backed save/history logic pass JVM unit tests. The retry path, saved-history flow, and Task 003 acceptance checklist have not yet been validated on the phone.
+The user later confirmed baseline offline/airplane-mode inference worked on the OnePlus 8 Pro. The structural validator, one-retry coordinator, Room-backed save/history logic, and Task 004 lifecycle/import/navigation recovery changes pass JVM unit tests.
+
+Latest feature acceptance is still pending on the phone: retry during refinement, saved-history flow, lifecycle reopen, failed-load recovery, same-filename model replacement, system Back routing, and the full manual evaluation checklist have not yet been validated on-device.

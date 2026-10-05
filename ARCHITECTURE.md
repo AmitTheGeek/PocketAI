@@ -4,7 +4,7 @@
 
 - `ui`: Compose rendering and `MainViewModel` screen state/user actions.
 - `summarization`: prompt-flow policy, structural validation, retry limit, and input-budget errors.
-- `inference`: local llama.cpp model execution, prompt construction, token counting, native cancellation, and resource cleanup.
+- `inference`: app-private model import, local llama.cpp model execution, prompt construction, token counting, native cancellation, model unload, and app-owned runtime shutdown.
 - `history`: Room entity/DAO/database, saved-summary domain models, and the repository between ViewModels and Room.
 - `PocketAiContainer`: simple application container for constructor injection of the engine and history repository.
 - `work/llama.cpp/examples/llama.android/lib`: generated local checkout of the pinned official llama.cpp Android example with PocketAI-specific native hooks from `patches/llama-cpp-pocketai.patch`.
@@ -19,11 +19,11 @@ The native runtime remains pinned to llama.cpp commit `1537a0a8b2f8711d840878b0a
 
 - Clones llama.cpp when `work/llama.cpp` is absent.
 - Checks out the pinned commit.
-- Applies the tracked patch when the checkout is clean.
-- Accepts an existing checkout only when its diff matches the tracked patch exactly.
+- Applies the tracked zero-context patch with `git apply --unidiff-zero` when the checkout is clean.
+- Accepts an existing checkout only when its zero-context diff matches the tracked patch exactly.
 - Fails if local ignored native changes differ from the tracked patch.
 
-Task 003 verified patch application in a separate temporary clone made from the local pinned llama.cpp checkout. That check did not perform a fresh network clone.
+Task 004 rechecked patch application against the local pinned llama.cpp checkout after converting the tracked patch to zero-context format. That check did not perform a fresh network clone.
 
 ## Generation Data Flow
 
@@ -95,9 +95,19 @@ The manifest currently sets `android:allowBackup="false"`. With that setting, ap
 
 ## Model Ownership
 
-`LlamaCppSummarizationEngine` owns the local llama.cpp runtime. It serializes load, token-count, generation, and close operations with one mutex. Loading a different model cleans up the previous native model only after the lock is acquired. Closing waits for in-flight work to release the lock, then destroys native resources off the main thread.
+`PocketAiContainer` is the app-process owner of the local llama.cpp runtime. It lazily creates one `LlamaCppSummarizationEngine` and keeps it shared across `MainViewModel` instances. `MainViewModel.onCleared()` cancels only its active request/job references; it does not permanently close the native runtime. This prevents Activity recreation from leaving future ViewModels with a destroyed upstream singleton.
 
-The model file is imported into app-private storage. It is not committed to the repository, stored in Room, or packaged into the APK.
+The upstream `AiChat.getInferenceEngine(...)` returns a process singleton. Because `destroy()` cancels that singleton's internal coroutine scope and there is no public replacement API, permanent shutdown is reserved for the app container/test teardown through `PocketAiContainer.closeNativeRuntime()`. That method closes only if the engine was initialized, so browsing history alone does not initialize native code just to clean it up.
+
+Runtime operations are intentionally separate:
+
+- Request cancellation: `SummarizationEngine.cancel()` requests cancellation of the current token generation loop.
+- Model unload: `SummarizationEngine.unloadModel()` frees the currently loaded model while keeping the native backend initialized.
+- Permanent shutdown: `SummarizationEngine.close()` destroys the app-owned runtime and should not be called from ViewModel disposal.
+
+`LlamaCppSummarizationEngine` serializes load, token-count, generation, unload, and close operations with one mutex. Loading a different model first unloads the previous native model under that lock. A failed load resets the upstream `Error` state through `cleanUp()` before a later load is allowed. PocketAI also patches the pinned upstream Android example so native `unload()` is safe after partial load failures.
+
+The model file is imported into app-private storage with a unique internal filename. The original display filename is retained for UI and saved-summary metadata. This lets two selected files share the same display name while still forcing the newly selected file to become the active model. Failed imports delete their newly copied file, and successful imports delete obsolete app-private model copies only after the new model has loaded. The active model file is not deleted while native inference may still be using it.
 
 ## Prompt Budget
 
@@ -114,6 +124,12 @@ Current settings:
 Cancel requests call `SummarizationEngine.cancel()` and cancel the ViewModel job. The same path covers initial generation and refinement. UI updates are guarded by a monotonically increasing request id so cancelled or older jobs cannot append tokens to a newer request.
 
 Native generation also receives a cancellation flag. The unit tests use fakes to verify coordinator and ViewModel cancellation behaviours, but those tests do not prove native cleanup safety on their own.
+
+## Model-Load Recovery
+
+A failed model load may leave the upstream singleton in `InferenceEngine.State.Error`. The wrapper treats that state as recoverable for future imports: before loading, and again after a failed load, it calls upstream `cleanUp()` to return to `Initialized`. The tracked native patch makes `unload()` null-safe so cleanup can run even when model loading failed partway through resource setup.
+
+This recovery path is covered with fake upstream-engine JVM tests. It still needs physical-device acceptance with an actual invalid GGUF followed by a valid import.
 
 ## Retry Trade-Offs
 

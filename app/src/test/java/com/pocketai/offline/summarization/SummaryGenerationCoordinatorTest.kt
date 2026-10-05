@@ -110,6 +110,8 @@ class SummaryGenerationCoordinatorTest {
 
             override fun cancel() = Unit
 
+            override suspend fun unloadModel() = Unit
+
             override suspend fun close() = Unit
         }
         val coordinator = SummaryGenerationCoordinator(engine)
@@ -153,6 +155,7 @@ class SummaryGenerationCoordinatorTest {
             }
 
             override fun cancel() = Unit
+            override suspend fun unloadModel() = Unit
             override suspend fun close() = Unit
         }
         val coordinator = SummaryGenerationCoordinator(engine)
@@ -252,6 +255,8 @@ class SummaryGenerationCoordinatorTest {
 
         override fun cancel() = Unit
 
+        override suspend fun unloadModel() = Unit
+
         override suspend fun close() = Unit
     }
 
@@ -277,6 +282,7 @@ class SummaryGenerationCoordinatorTest {
         }
 
         override fun cancel() = Unit
+        override suspend fun unloadModel() = Unit
         override suspend fun close() = Unit
     }
 

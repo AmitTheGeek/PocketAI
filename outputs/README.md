@@ -9,7 +9,7 @@ Offline summarisation prototype for Android 13 on arm64 devices such as the OneP
 - llama.cpp commit: `1537a0a8b2f8711d840878b0a0677ab2213c882c`
 - Source reference: https://github.com/ggml-org/llama.cpp/tree/1537a0a8b2f8711d840878b0a0677ab2213c882c/examples/llama.android
 
-The native wrapper is based on the official Android example and is patched for this prototype to use a 2048-token context, Qwen GGUF chat-template formatting through llama.cpp's Jinja chat formatter, per-request state reset so generation does not keep chat history, runtime prompt-token counting, explicit rejection of over-budget prompts, and cancellation support.
+The native wrapper is based on the official Android example and is patched for this prototype to use a 2048-token context, Qwen GGUF chat-template formatting through llama.cpp's Jinja chat formatter, per-request state reset so generation does not keep chat history, runtime prompt-token counting, explicit rejection of over-budget prompts, cancellation support, and recoverable cleanup after failed model loads.
 
 ## Model
 
@@ -17,7 +17,7 @@ Download this exact GGUF before testing:
 
 https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 
-Do not place the model in the repository, `assets/`, `res/`, or the APK. The app imports the file through Android's file picker and copies it to app-private storage.
+Do not place the model in the repository, `assets/`, `res/`, or the APK. The app imports the file through Android's file picker and copies it to app-private storage with a unique internal filename while preserving the original display filename in the UI.
 
 ## Build Dependencies
 
@@ -41,7 +41,7 @@ After cloning the repository, fetch and patch the pinned llama.cpp Android examp
 ./scripts/setup-llama-cpp.sh
 ```
 
-This creates `work/llama.cpp` at commit `1537a0a8b2f8711d840878b0a0677ab2213c882c` and applies `patches/llama-cpp-pocketai.patch`. The `work/` directory is generated local state and is not committed.
+This creates `work/llama.cpp` at commit `1537a0a8b2f8711d840878b0a0677ab2213c882c` and applies `patches/llama-cpp-pocketai.patch`. The patch is stored as a zero-context diff and applied with `git apply --unidiff-zero`, so it is deterministic for the pinned upstream revision while keeping the tracked patch file whitespace-clean. The `work/` directory is generated local state and is not committed.
 
 ```sh
 JAVA_HOME=/path/to/jdk17 ./gradlew testDebugUnitTest
@@ -109,20 +109,20 @@ Model binaries are not stored in Room. The manifest currently sets `android:allo
 
 ## Evaluation Cases
 
-Five short rubric-based evaluation cases are documented in `docs/evaluation-cases.md`. They cover deadlines, negation, numerical facts, uncertain plans, and instruction-like text embedded inside source text. The same document includes a device checklist for airplane mode, all five cases, refinement, cancellation during refinement, oversized input, saving, relaunch persistence, history without model loading, deletion, and warned-result retention.
+Five short rubric-based evaluation cases are documented in `docs/evaluation-cases.md`. They cover deadlines, negation, numerical facts, uncertain plans, and instruction-like text embedded inside source text. The same document includes a device checklist for airplane mode, all five cases, refinement, cancellation during refinement, oversized input, saving, relaunch persistence, history without model loading, deletion, warned-result retention, Activity recreation, failed-load recovery, same-filename model replacement, and system Back routing.
 
 ## Architecture Notes
 
-See `PROJECT_BRIEF.md` for scope and exclusions, and `ARCHITECTURE.md` for responsibilities, state, cancellation, prompt budget handling, Room persistence, backup policy, and retry trade-offs.
+See `PROJECT_BRIEF.md` for scope and exclusions, and `ARCHITECTURE.md` for responsibilities, state, cancellation, prompt budget handling, Room persistence, backup policy, app-owned native runtime policy, failed-load recovery, and retry trade-offs.
 
 ## Actual Build Result
 
-`JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` succeeded on October 4, 2026 after Task 003 changes.
+`JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` succeeded on October 5, 2026 after Task 004 changes. The run took 2m 43s.
 
-`JAVA_HOME=work/jdk17/Contents/Home ./gradlew assembleDebug` succeeded on October 4, 2026 after Task 003 changes. The build took 14m 58s and refreshed `outputs/PocketAI-debug.apk`.
+`JAVA_HOME=work/jdk17/Contents/Home ./gradlew assembleDebug` succeeded on October 5, 2026 after Task 004 changes. The build took 9m 45s and refreshed `outputs/PocketAI-debug.apk`.
 
-Physical-device smoke testing was previously performed on the connected OnePlus 8 Pro / IN2021 on October 4, 2026: APK install succeeded, the app launched, the GGUF was imported into app-private storage, and real summary runs took about 4-6 seconds. Initial cancellation followed by a fresh request passed on-device.
+Physical-device smoke testing was previously performed on the connected OnePlus 8 Pro / IN2021 on October 4, 2026: APK install succeeded, the app launched, the GGUF was imported into app-private storage, and real summary runs took about 4-6 seconds. Initial cancellation followed by a fresh request passed on-device. The user later confirmed baseline offline/airplane-mode inference worked on the same phone.
 
-The structural validator, one-retry coordinator, Room persistence, and ViewModel save orchestration pass JVM unit tests. The retry path, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone. A full airplane-mode test was not performed.
+The structural validator, one-retry coordinator, Room persistence, ViewModel save orchestration, and Task 004 lifecycle/import/navigation recovery changes pass JVM unit tests. The latest lifecycle recovery, failed-load recovery, same-filename replacement, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone.
 
-The source manifest declares no permissions. The merged app manifest contains AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. An APK archive check found no GGUF or Qwen model files packaged in `outputs/PocketAI-debug.apk`.
+The source manifest declares no permissions. On October 5, 2026, the merged app manifest contained AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. An APK archive check found no GGUF or Qwen model files packaged in `outputs/PocketAI-debug.apk`.

@@ -19,12 +19,12 @@ fi
 
 git -C "$LLAMA_DIR" checkout "$LLAMA_COMMIT"
 
-if ! git -C "$LLAMA_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
+if ! git -C "$LLAMA_DIR" apply --unidiff-zero --check "$PATCH_FILE" 2>/dev/null; then
   current_patch="$(mktemp)"
   trap 'rm -f "$current_patch"' EXIT
-  git -C "$LLAMA_DIR" diff > "$current_patch"
+  git -C "$LLAMA_DIR" diff --unified=0 > "$current_patch"
 
-  if git -C "$LLAMA_DIR" apply --reverse --check "$PATCH_FILE" 2>/dev/null &&
+  if git -C "$LLAMA_DIR" apply --unidiff-zero --reverse --check "$PATCH_FILE" 2>/dev/null &&
     cmp -s "$current_patch" "$PATCH_FILE"; then
     echo "Patch is already applied exactly; leaving existing llama.cpp checkout in place."
     exit 0
@@ -34,5 +34,5 @@ if ! git -C "$LLAMA_DIR" apply --check "$PATCH_FILE" 2>/dev/null; then
   exit 1
 fi
 
-git -C "$LLAMA_DIR" apply "$PATCH_FILE"
+git -C "$LLAMA_DIR" apply --unidiff-zero "$PATCH_FILE"
 echo "llama.cpp is pinned and patched at $LLAMA_COMMIT."

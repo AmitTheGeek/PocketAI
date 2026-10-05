@@ -6,7 +6,9 @@ import androidx.room.Room
 import com.pocketai.offline.history.PocketAiDatabase
 import com.pocketai.offline.history.RoomSummaryHistoryRepository
 import com.pocketai.offline.history.SummaryHistoryRepository
+import com.pocketai.offline.inference.AppPrivateModelImporter
 import com.pocketai.offline.inference.LlamaCppSummarizationEngine
+import com.pocketai.offline.inference.ModelImporter
 import com.pocketai.offline.inference.SummarizationEngine
 
 class PocketAiApplication : Application() {
@@ -19,6 +21,9 @@ class PocketAiContainer(
     context: Context,
 ) {
     private val appContext = context.applicationContext
+    private val summarizationEngineHolder = lazy {
+        LlamaCppSummarizationEngine(appContext)
+    }
 
     val database: PocketAiDatabase by lazy {
         Room.databaseBuilder(
@@ -32,8 +37,16 @@ class PocketAiContainer(
         RoomSummaryHistoryRepository(database.savedSummaryDao())
     }
 
-    val summarizationEngine: SummarizationEngine by lazy {
-        LlamaCppSummarizationEngine(appContext)
+    val modelImporter: ModelImporter by lazy {
+        AppPrivateModelImporter(appContext)
+    }
+
+    val summarizationEngine: SummarizationEngine
+        get() = summarizationEngineHolder.value
+
+    suspend fun closeNativeRuntime() {
+        if (summarizationEngineHolder.isInitialized()) {
+            summarizationEngineHolder.value.close()
+        }
     }
 }
-

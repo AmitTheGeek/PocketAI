@@ -1,9 +1,12 @@
 package com.pocketai.offline.ui
 
 import android.app.Application
+import android.net.Uri
 import com.pocketai.offline.history.NewSavedSummary
 import com.pocketai.offline.history.SavedSummary
 import com.pocketai.offline.history.SummaryHistoryRepository
+import com.pocketai.offline.inference.ImportedModelFile
+import com.pocketai.offline.inference.ModelImporter
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryAttempt
 import java.io.File
@@ -145,6 +148,7 @@ class MainViewModelSaveTest {
         return MainViewModel(
             application = app,
             engine = engine,
+            modelImporter = FakeModelImporter(),
             historyRepository = repository,
             nowEpochMs = { 42_000L },
             initialState = PocketAiUiState(
@@ -177,6 +181,7 @@ class MainViewModelSaveTest {
         }
 
         override fun cancel() = Unit
+        override suspend fun unloadModel() = Unit
         override suspend fun close() = Unit
     }
 
@@ -193,6 +198,7 @@ class MainViewModelSaveTest {
         }
 
         override fun cancel() = Unit
+        override suspend fun unloadModel() = Unit
         override suspend fun close() = Unit
     }
 
@@ -211,7 +217,17 @@ class MainViewModelSaveTest {
         }
 
         override fun cancel() = Unit
+        override suspend fun unloadModel() = Unit
         override suspend fun close() = Unit
+    }
+
+    private class FakeModelImporter : ModelImporter {
+        override suspend fun import(uri: Uri): ImportedModelFile =
+            error("Import is not used by save tests.")
+
+        override suspend fun deleteImportedFile(file: File) = Unit
+
+        override suspend fun deleteObsoleteModels(activeModelPath: String) = Unit
     }
 
     private class FakeHistoryRepository : SummaryHistoryRepository {

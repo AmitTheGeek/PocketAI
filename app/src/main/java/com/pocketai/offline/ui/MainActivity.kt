@@ -1,6 +1,7 @@
 package com.pocketai.offline.ui
 
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -75,6 +76,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun PocketAiScreen(viewModel: MainViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    BackHandler(enabled = state.destination != PocketAiDestination.Summarizer) {
+        viewModel.navigateBack()
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
