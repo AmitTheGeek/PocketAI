@@ -5,6 +5,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 
 enum class SummaryAttempt {
@@ -17,6 +18,10 @@ sealed interface SummaryGenerationEvent {
     data object Refining : SummaryGenerationEvent
     data class FormatWarning(val message: String) : SummaryGenerationEvent
 }
+
+data class PreparedSummaryRequest(
+    val sourceText: String,
+)
 
 class BlankSummaryInputException : IllegalArgumentException(
     "Enter text to summarize."
@@ -38,10 +43,18 @@ class SummaryGenerationCoordinator(
     private val validator: SummaryFormatValidator = SummaryFormatValidator,
 ) {
     fun summarize(sourceText: String): Flow<SummaryGenerationEvent> = flow {
+        emitAll(summarize(prepare(sourceText)))
+    }
+
+    suspend fun prepare(sourceText: String): PreparedSummaryRequest {
         if (sourceText.isBlank()) throw BlankSummaryInputException()
+        val trimmedSource = sourceText.trim()
+        checkPromptBudget(trimmedSource)
+        return PreparedSummaryRequest(sourceText = trimmedSource)
+    }
 
-        checkPromptBudget(sourceText)
-
+    fun summarize(request: PreparedSummaryRequest): Flow<SummaryGenerationEvent> = flow {
+        val sourceText = request.sourceText
         val initialOutput = collectAttempt(sourceText, SummaryAttempt.Initial)
         val initialValidation = validator.validate(initialOutput)
         if (initialValidation.isValid) return@flow

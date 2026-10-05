@@ -6,6 +6,7 @@ import com.pocketai.offline.history.NewSavedSummary
 import com.pocketai.offline.history.SavedSummary
 import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.ImportedModelFile
+import com.pocketai.offline.inference.LoadedModelInfo
 import com.pocketai.offline.inference.ModelImporter
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryAttempt
@@ -15,6 +16,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
@@ -76,7 +78,7 @@ class MainViewModelSaveTest {
         idleMain()
 
         val afterFailure = viewModel.uiState.value
-        assertTrue(afterFailure.generationState is GenerationState.Completed)
+        assertEquals(GenerationState.Completed, afterFailure.generationState)
         assertEquals("- Saved result", afterFailure.outputText)
         assertTrue(afterFailure.saveState is SaveState.Error)
         assertTrue(afterFailure.canSave)
@@ -137,7 +139,7 @@ class MainViewModelSaveTest {
         idleMain()
 
         assertEquals(0, repository.savedRequests.size)
-        assertTrue(viewModel.uiState.value.generationState is GenerationState.Cancelled)
+        assertEquals(GenerationState.Cancelled, viewModel.uiState.value.generationState)
     }
 
     private fun viewModel(
@@ -171,10 +173,11 @@ class MainViewModelSaveTest {
     private class ScriptedEngine(
         private val output: String,
     ) : SummarizationEngine {
+        override val loadedModel: StateFlow<LoadedModelInfo?> = MutableStateFlow(null)
         override val contextWindowTokens: Int = 2_048
         override val maxGeneratedTokens: Int = 512
 
-        override suspend fun loadModel(modelFile: File) = Unit
+        override suspend fun loadModel(modelFile: File, displayName: String) = Unit
         override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
         override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
             emit(output)
@@ -188,10 +191,11 @@ class MainViewModelSaveTest {
     private class AttemptEngine(
         private vararg val outputs: Pair<SummaryAttempt, String>,
     ) : SummarizationEngine {
+        override val loadedModel: StateFlow<LoadedModelInfo?> = MutableStateFlow(null)
         override val contextWindowTokens: Int = 2_048
         override val maxGeneratedTokens: Int = 512
 
-        override suspend fun loadModel(modelFile: File) = Unit
+        override suspend fun loadModel(modelFile: File, displayName: String) = Unit
         override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
         override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
             emit(outputs.first { it.first == attempt }.second)
@@ -205,10 +209,11 @@ class MainViewModelSaveTest {
     private class BlockingEngine(
         private val started: CompletableDeferred<Unit>,
     ) : SummarizationEngine {
+        override val loadedModel: StateFlow<LoadedModelInfo?> = MutableStateFlow(null)
         override val contextWindowTokens: Int = 2_048
         override val maxGeneratedTokens: Int = 512
 
-        override suspend fun loadModel(modelFile: File) = Unit
+        override suspend fun loadModel(modelFile: File, displayName: String) = Unit
         override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
         override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
             started.complete(Unit)

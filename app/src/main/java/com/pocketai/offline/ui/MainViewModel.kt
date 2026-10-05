@@ -13,6 +13,7 @@ import com.pocketai.offline.history.NewSavedSummary
 import com.pocketai.offline.history.SavedSummary
 import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.ImportedModelFile
+import com.pocketai.offline.inference.LoadedModelInfo
 import com.pocketai.offline.inference.ModelImporter
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryGenerationCoordinator
@@ -43,15 +44,18 @@ sealed interface ModelReadiness {
 
 sealed interface GenerationState {
     data object Idle : GenerationState
+    data object Preparing : GenerationState
     data object Generating : GenerationState
     data object Refining : GenerationState
+    data object Stopping : GenerationState
     data object Completed : GenerationState
     data object Cancelled : GenerationState
     data class Failed(val message: String) : GenerationState
 }
 
 sealed interface PocketAiDestination {
-    data object Summarizer : PocketAiDestination
+    data object Input : PocketAiDestination
+    data object Result : PocketAiDestination
     data object History : PocketAiDestination
     data class Detail(val summaryId: Long) : PocketAiDestination
 }
@@ -105,10 +109,11 @@ data class CompletedSummarySnapshot(
 }
 
 data class PocketAiUiState(
-    val destination: PocketAiDestination = PocketAiDestination.Summarizer,
+    val destination: PocketAiDestination = PocketAiDestination.Input,
     val modelReadiness: ModelReadiness = ModelReadiness.NoModel,
     val generationState: GenerationState = GenerationState.Idle,
     val inputText: String = SAMPLE_PARAGRAPH,
+    val activeSourceText: String? = null,
     val outputText: String = "",
     val elapsedMs: Long = 0L,
     val formatWarning: String? = null,
@@ -133,7 +138,10 @@ data class PocketAiUiState(
         get() = when {
             modelReadiness is ModelReadiness.Importing -> "Importing GGUF"
             modelReadiness is ModelReadiness.Loading -> "Loading model"
-            generationState is GenerationState.Refining -> "Refining summary..."
+            generationState == GenerationState.Preparing -> "Preparing summary..."
+            generationState == GenerationState.Generating -> "Summarising..."
+            generationState == GenerationState.Refining -> "Refining summary..."
+            generationState == GenerationState.Stopping -> "Stopping..."
             else -> null
         }
 
@@ -178,13 +186,12 @@ data class PocketAiUiState(
 
     val canSummarize: Boolean
         get() = modelReadiness is ModelReadiness.Ready &&
-            inputText.isNotBlank() &&
             !isBusy
 
     val canSave: Boolean
         get() {
             val snapshot = completedSummary ?: return false
-            if (generationState !is GenerationState.Completed) return false
+            if (generationState != GenerationState.Completed) return false
             return when (val state = saveState) {
                 is SaveState.Saving -> state.resultId != snapshot.resultId
                 is SaveState.Saved -> state.resultId != snapshot.resultId
@@ -212,6 +219,7 @@ class MainViewModel(
     private var activeSummaryRequestId: Long = 0L
 
     init {
+        reflectLoadedModelReadiness()
         observeHistory()
     }
 
@@ -219,11 +227,11 @@ class MainViewModel(
         _uiState.update { it.copy(inputText = text) }
     }
 
-    fun openSummarizer() {
+    fun openInput() {
         detailJob?.cancel()
         _uiState.update {
             it.copy(
-                destination = PocketAiDestination.Summarizer,
+                destination = PocketAiDestination.Input,
                 detailState = DetailUiState.Idle
             )
         }
@@ -273,10 +281,18 @@ class MainViewModel(
                 true
             }
             PocketAiDestination.History -> {
-                openSummarizer()
+                openInput()
                 true
             }
-            PocketAiDestination.Summarizer -> false
+            PocketAiDestination.Result -> {
+                if (_uiState.value.generationState.isActive) {
+                    requestSummaryStop(returnToInput = true)
+                } else {
+                    openInput()
+                }
+                true
+            }
+            PocketAiDestination.Input -> false
         }
     }
 
@@ -297,7 +313,7 @@ class MainViewModel(
             try {
                 val modelFile = modelImporter.import(uri).also { importedModel = it }
                 _uiState.update { it.copy(modelReadiness = ModelReadiness.Loading) }
-                engine.loadModel(modelFile.file)
+                engine.loadModel(modelFile.file, modelFile.displayName)
                 val model = ImportedModel(
                     name = modelFile.displayName,
                     sizeBytes = modelFile.file.length(),
@@ -308,6 +324,7 @@ class MainViewModel(
                     it.copy(
                         modelReadiness = ModelReadiness.Ready(model),
                         generationState = GenerationState.Idle,
+                        activeSourceText = null,
                         outputText = "",
                         elapsedMs = 0L,
                         formatWarning = null,
@@ -336,34 +353,34 @@ class MainViewModel(
         if (current.isBusy) return
         if (current.modelReadiness !is ModelReadiness.Ready) {
             _uiState.update {
-                it.copy(generationState = GenerationState.Failed("Import a GGUF model first."))
-            }
-            return
-        }
-
-        val paragraph = current.inputText.trim()
-        if (paragraph.isEmpty()) {
-            _uiState.update {
-                it.copy(generationState = GenerationState.Failed("Enter text to summarize."))
+                it.copy(
+                    destination = PocketAiDestination.Input,
+                    generationState = GenerationState.Failed("Import a GGUF model first.")
+                )
             }
             return
         }
 
         val requestId = ++activeSummaryRequestId
         val model = current.model
+        val sourceSnapshot = current.inputText
+        _uiState.update {
+            it.copy(
+                destination = PocketAiDestination.Input,
+                generationState = GenerationState.Preparing,
+                activeSourceText = sourceSnapshot,
+                outputText = "",
+                elapsedMs = 0L,
+                formatWarning = null,
+                completedSummary = null,
+                saveState = SaveState.Idle
+            )
+        }
+
         summaryJob = viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
             var refinementOccurred = false
-            _uiState.update {
-                it.copy(
-                    generationState = GenerationState.Generating,
-                    outputText = "",
-                    elapsedMs = 0L,
-                    formatWarning = null,
-                    completedSummary = null,
-                    saveState = SaveState.Idle
-                )
-            }
+            var openedResult = false
 
             val timer = launch {
                 while (true) {
@@ -375,7 +392,18 @@ class MainViewModel(
             }
 
             try {
-                summaryCoordinator.summarize(paragraph).collect { event ->
+                val preparedRequest = summaryCoordinator.prepare(sourceSnapshot)
+                updateIfCurrent(requestId) {
+                    it.copy(
+                        destination = PocketAiDestination.Result,
+                        generationState = GenerationState.Generating,
+                        activeSourceText = preparedRequest.sourceText,
+                        elapsedMs = SystemClock.elapsedRealtime() - startedAt
+                    )
+                }
+                openedResult = true
+
+                summaryCoordinator.summarize(preparedRequest).collect { event ->
                     if (!isCurrentRequest(requestId)) return@collect
                     when (event) {
                         is SummaryGenerationEvent.Token -> {
@@ -414,7 +442,7 @@ class MainViewModel(
                         elapsedMs = finalElapsed,
                         completedSummary = CompletedSummarySnapshot(
                             resultId = requestId,
-                            sourceText = paragraph,
+                            sourceText = preparedRequest.sourceText,
                             summaryText = it.outputText,
                             durationMs = finalElapsed,
                             refinementOccurred = refinementOccurred,
@@ -436,8 +464,11 @@ class MainViewModel(
             } catch (throwable: Throwable) {
                 updateIfCurrent(requestId) {
                     it.copy(
+                        destination = if (openedResult) it.destination else PocketAiDestination.Input,
                         generationState = GenerationState.Failed(
-                            throwable.userMessage("Summarization failed")
+                            throwable.userMessage(
+                                if (openedResult) "Summarization failed" else "Cannot start summary"
+                            )
                         ),
                         elapsedMs = SystemClock.elapsedRealtime() - startedAt,
                         completedSummary = null,
@@ -455,8 +486,7 @@ class MainViewModel(
     }
 
     fun cancelSummary() {
-        engine.cancel()
-        summaryJob?.cancel(CancellationException("User cancelled summarization."))
+        requestSummaryStop(returnToInput = false)
     }
 
     fun saveCurrentSummary() {
@@ -563,6 +593,36 @@ class MainViewModel(
         }
     }
 
+    private fun reflectLoadedModelReadiness() {
+        val loadedModel = engine.loadedModel.value ?: return
+        _uiState.update { current ->
+            if (current.modelReadiness is ModelReadiness.NoModel) {
+                current.copy(modelReadiness = ModelReadiness.Ready(loadedModel.toImportedModel()))
+            } else {
+                current
+            }
+        }
+    }
+
+    private fun requestSummaryStop(returnToInput: Boolean) {
+        val current = _uiState.value
+        if (!current.generationState.isActive) {
+            if (returnToInput) openInput()
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                destination = if (returnToInput) PocketAiDestination.Input else it.destination,
+                generationState = GenerationState.Stopping,
+                completedSummary = null,
+                saveState = SaveState.Idle
+            )
+        }
+        engine.cancel()
+        summaryJob?.cancel(CancellationException("User cancelled summarization."))
+    }
+
     private fun Throwable.userMessage(prefix: String): String =
         message?.let { "$prefix: $it" } ?: prefix
 
@@ -631,7 +691,17 @@ private val ModelReadiness.isChanging: Boolean
     get() = this is ModelReadiness.Importing || this is ModelReadiness.Loading
 
 private val GenerationState.isActive: Boolean
-    get() = this is GenerationState.Generating || this is GenerationState.Refining
+    get() = this == GenerationState.Preparing ||
+        this == GenerationState.Generating ||
+        this == GenerationState.Refining ||
+        this == GenerationState.Stopping
+
+private fun LoadedModelInfo.toImportedModel(): ImportedModel =
+    ImportedModel(
+        name = name,
+        sizeBytes = sizeBytes,
+        path = path
+    )
 
 private fun formatBytesForState(bytes: Long): String {
     if (bytes <= 0L) return "0 B"

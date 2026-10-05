@@ -2,54 +2,65 @@
 
 ## Layout
 
-The summariser screen now uses a Material 3 `Scaffold` with a top app bar for PocketAI and History. The main content order is:
+Task 006 separates editing and reading into two Compose destinations inside the same app module.
 
-1. Compact model status with an import/change action.
-2. Source text editor.
-3. Primary Summarise or Cancel action.
-4. Summary reader with Copy and Save actions.
+Input screen:
 
-Model and runtime implementation details stay out of ordinary labels. The UI says "model" and "local summarisation"; setup docs still describe the GGUF requirement.
+- Top app bar with PocketAI and History.
+- Compact model readiness row with Import model or Change model.
+- A spacious multiline source editor that fills remaining space.
+- A bottom Summarise action outside the editor and above keyboard/navigation insets.
+- Blank-input, readiness, import, load, and prompt-budget feedback stays on this screen.
+
+Result screen:
+
+- Top app bar with Back and Summary.
+- Preparing, generating, refining, completed, cancelled, failed, warning, save, and copy feedback.
+- Selectable summary text in a content-height scroll area.
+- Cancel remains in the bottom action area while work is active.
+- Completed results expose Copy, Save, and Edit source. Cancelled partial text can be copied but cannot be saved.
+
+The removed expanded-editor flow is intentionally not replaced. The main editor is now the editing surface, and the draft remains in `PocketAiUiState` while moving between Input, Result, History, and Detail.
 
 ## Scroll Ownership
 
-The main summariser page has one vertical scroll owner. Summary output is rendered at content height with no fixed-height container, no `maxLines`, and no ellipsis. Long output is selectable and copyable before saving.
+Input and Result own separate scroll behavior.
 
-During streaming, the page follows new output only while the reader is already at the end. If the reader scrolls upward during generation, auto-follow stops and a Jump to latest action appears. Refinement replaces first-attempt output instead of appending, preserving the bounded retry behaviour from Task 004.
-
-## Expanded Editor
-
-The compact source editor grows to a bounded height and then scrolls internally. Expand opens a full-screen editor using the same ViewModel draft. Done and system Back close the editor without discarding edits. Because the draft is held in `PocketAiUiState`, text edits survive Activity recreation and configuration changes.
-
-The expanded editor uses safe drawing and IME padding so the keyboard does not cover the editing surface. Token-budget validation remains unchanged; a larger editor does not increase the model context window.
+- The source editor scrolls internally within the Input screen.
+- The Result screen owns a `ScrollState` for summary reading.
+- Output is rendered without fixed-height clipping, `maxLines`, or ellipsis.
+- Auto-follow is enabled only while the reader is already at the bottom.
+- User scroll gestures turn auto-follow off.
+- Jump to latest restores follow mode and scrolls to the current end.
+- Refinement replaces first-attempt output while preserving the reader's follow/not-follow intent for the same source snapshot.
+- Bottom actions are outside scrolling text, so Cancel/Copy/Save/Edit remain reachable.
 
 ## Accessibility
 
-Controls use Material components for touch target sizing and adapt into vertical rows on narrow screens. Source, summary, copy, save, import, cancel, and navigation actions have meaningful labels. Streaming text is not marked as a live region, so screen readers are not asked to announce every token; progress/status bands expose useful generation, refinement, warning, error, save, and cancellation states.
+The screens use Material 3 components for touch target sizing and adapt actions vertically on narrow widths. Source, summary, copy, save, import, cancel, edit, history, and navigation controls have content descriptions. Streaming tokens are not exposed as a live region; status bands communicate meaningful progress changes such as Preparing, Summarising, Refining, Stopping, warnings, errors, and completion-related feedback.
 
-Saved source and summary detail text is selectable and unconstrained inside the detail screen scroll.
+Safe drawing, navigation-bar, and IME padding keep bottom actions from covering the last input/output line. Large-font and narrow-screen previews are design checks only; they do not prove physical-device behavior.
 
 ## Previews
 
 Compose previews cover:
 
-- Empty state.
-- Long input and long summary.
+- Input empty state.
+- Input with long source text.
+- Result with long summary.
 - Generating.
 - Refining.
 - Format warning.
 - Large font on a narrow screen.
 - Dark theme.
 
-Previews are design checks only; they do not prove device behaviour.
-
 ## Regression Checklist
 
-- JVM unit tests: passed on October 5, 2026 with `JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest`.
-- Connected Compose UI tests: passed on October 5, 2026 with `JAVA_HOME=work/jdk17/Contents/Home ./gradlew :app:connectedDebugAndroidTest --no-daemon` on connected `IN2021 - 13`. These tests verify rendered UI behaviours only; they do not validate real model quality or native inference safety.
-- Long-output Compose regression: passed by scrolling a long synthetic summary to a unique final-line marker and asserting the final line is displayed.
-- Expanded-editor reopen regression: passed by editing the shared draft, closing, reopening, and checking the inserted text remains.
-- Copy-full-output regression: passed by copying a long output with an end marker and checking the full string.
-- Debug APK build: passed with `JAVA_HOME=work/jdk17/Contents/Home ./gradlew assembleDebug`; refreshed artifact at `outputs/PocketAI-debug.apk`.
-- Artifact checks: no `INTERNET` permission found in the debug app manifest; `outputs/PocketAI-debug.apk` contains no `gguf` or `qwen` entries; tracked files contain no `.gguf` or `.safetensors` model assets.
-- Manual device acceptance: pending for keyboard behaviour, large fonts, landscape/narrow layouts, streaming manual-scroll behaviour during real generation, copy/save after real generation, cancellation during refinement, and the Task 004 lifecycle/model-recovery checklist.
+- JVM unit tests: attempted on October 5, 2026. The sandbox blocked Gradle access to `~/.gradle`, and the workspace-local Gradle home lacked the wrapper distribution. A direct Gradle binary then failed because the sandbox blocked Gradle's file-lock listener socket. Tests still need to be rerun outside that sandbox blocker.
+- Connected Compose UI tests: not run in this pass.
+- Long-output Compose regression: covered by `SummaryReadingUiTest.longSummaryFinalMarkerCanBeScrolledIntoView`, pending execution.
+- Input draft return regression: covered by `SummaryReadingUiTest.inputDraftSurvivesOpeningResultAndReturning`, pending execution.
+- Copy-full-output regression: covered by `SummaryReadingUiTest.copyUsesCompleteOutputText`, pending execution.
+- Cancel reachability: covered by `SummaryReadingUiTest.cancelRemainsReachableAtBottomOfLongStreamingOutput`, pending execution.
+- Jump/latest and refinement scroll intent: covered by `SummaryReadingUiTest.jumpToLatestAppearsAfterManualScrollAway` and `manualScrollIntentSurvivesRefinementReplacement`, pending execution.
+- Manual device acceptance: pending for the split Input/Result flow, keyboard behavior, rotation, copy/save, history, real streaming, Back/cancellation, and the retained model-recovery/evaluation checklist.

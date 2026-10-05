@@ -85,10 +85,11 @@ outputs/PocketAI-debug.apk
 3. Launch PocketAI.
 4. Tap Import GGUF and select the downloaded model.
 5. Wait for the import and load state to finish.
-6. Edit or keep the sample paragraph, then tap Summarize.
-7. Use Cancel to stop an in-progress generation.
-8. Tap Save after a completed result.
-9. Open History, open the saved detail, copy the summary if needed, and delete saved records when testing deletion.
+6. Edit or keep the sample paragraph on the Input screen, then tap Summarize.
+7. Confirm the app opens the Result screen before completion and streams output there.
+8. Use Cancel to stop an in-progress generation while remaining on Result, or use Back during active work to stop and return to Input.
+9. Tap Copy, Save, or Edit source after a completed result.
+10. Open History, open the saved detail, copy the summary if needed, and delete saved records when testing deletion.
 
 ## Airplane-Mode Test
 
@@ -128,12 +129,12 @@ See `PROJECT_BRIEF.md` for scope and exclusions, and `ARCHITECTURE.md` for respo
 
 ## Actual Build Result
 
-`JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` succeeded on October 5, 2026 after Task 004 changes. The run took 2m 43s.
+Task 004/005 baseline: `JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` and `assembleDebug` succeeded on October 5, 2026, and `outputs/PocketAI-debug.apk` was refreshed at that time.
 
-`JAVA_HOME=work/jdk17/Contents/Home ./gradlew assembleDebug` succeeded on October 5, 2026 after Task 004 changes. The build took 9m 45s and refreshed `outputs/PocketAI-debug.apk`.
+Task 006 status: the split Input/Result implementation has been updated in source, but this environment has not yet completed `testDebugUnitTest` or `assembleDebug`. The first wrapper run was blocked by sandbox denial when Gradle tried to use `~/.gradle`; the workspace-local Gradle home then lacked the wrapper distribution and could not download it because network access is blocked; running the already-installed Gradle binary directly failed when the sandbox blocked Gradle's file-lock listener socket.
 
 Physical-device smoke testing was previously performed on the connected OnePlus 8 Pro / IN2021 on October 4, 2026: APK install succeeded, the app launched, the GGUF was imported into app-private storage, and real summary runs took about 4-6 seconds. Initial cancellation followed by a fresh request passed on-device. The user later confirmed baseline offline/airplane-mode inference worked on the same phone.
 
-The structural validator, one-retry coordinator, Room persistence, ViewModel save orchestration, and Task 004 lifecycle/import/navigation recovery changes pass JVM unit tests. The latest lifecycle recovery, failed-load recovery, same-filename replacement, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone.
+The structural validator, one-retry coordinator, Room persistence, ViewModel save orchestration, and Task 004 lifecycle/import/navigation recovery changes passed JVM unit tests before Task 006. The Task 006 split-screen navigation, refreshed UI tests, latest lifecycle recovery, failed-load recovery, same-filename replacement, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone.
 
-The source manifest declares no permissions. On October 5, 2026, the merged app manifest contained AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. An APK archive check found no GGUF or Qwen model files packaged in `outputs/PocketAI-debug.apk`.
+The source manifest declares no permissions. On October 5, 2026, the merged app manifest contained AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. The latest Task 006 APK archive check is pending because `assembleDebug` has not yet completed in this environment.

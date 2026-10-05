@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,17 +51,42 @@ class LlamaCppSummarizationEngineTest {
         val goodModel = tempModelFile("good")
 
         val failure = runCatching {
-            engine.loadModel(badModel)
+            engine.loadModel(badModel, "bad.gguf")
         }.exceptionOrNull()
-        engine.loadModel(goodModel)
+        engine.loadModel(goodModel, "good.gguf")
 
         assertTrue(failure is IOException)
         assertEquals(1, upstream.cleanUpCount)
+        assertEquals("good.gguf", engine.loadedModel.value?.name)
         assertEquals(
             listOf(badModel.absolutePath, goodModel.absolutePath),
             upstream.loadedPaths
         )
         assertTrue(upstream.state.value is InferenceEngine.State.ModelReady)
+    }
+
+    @Test
+    fun cleanupFailureAfterLoadFailureDoesNotReportReadyModel() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val upstream = FakeInferenceEngine(
+            failFirstLoad = true,
+            failCleanup = true
+        )
+        val engine = LlamaCppSummarizationEngine(
+            context = app,
+            engineProvider = { upstream }
+        )
+        val badModel = tempModelFile("bad-cleanup")
+
+        val failure = runCatching {
+            engine.loadModel(badModel, "bad-cleanup.gguf")
+        }.exceptionOrNull()
+
+        assertTrue(failure is IOException)
+        assertEquals(1, upstream.cleanUpCount)
+        assertTrue(failure?.suppressed?.any { it is IOException && it.message == "cleanup failed" } == true)
+        assertNull(engine.loadedModel.value)
+        assertTrue(upstream.state.value is InferenceEngine.State.Error)
     }
 
     private fun tempModelFile(label: String): File =
@@ -71,6 +97,7 @@ class LlamaCppSummarizationEngineTest {
 
     private class FakeInferenceEngine(
         private val failFirstLoad: Boolean = false,
+        private val failCleanup: Boolean = false,
     ) : InferenceEngine {
         private val mutableState = MutableStateFlow<InferenceEngine.State>(
             InferenceEngine.State.Initialized
@@ -107,6 +134,9 @@ class LlamaCppSummarizationEngineTest {
 
         override fun cleanUp() {
             cleanUpCount += 1
+            if (failCleanup) {
+                throw IOException("cleanup failed")
+            }
             mutableState.value = InferenceEngine.State.Initialized
         }
 

@@ -4,10 +4,10 @@ import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 
-@Preview(name = "Empty state", showBackground = true, widthDp = 390, heightDp = 820)
+@Preview(name = "Input empty state", showBackground = true, widthDp = 390, heightDp = 820)
 @Composable
-private fun EmptyStatePreview() {
-    PreviewSummarizer(
+private fun InputEmptyStatePreview() {
+    PreviewInput(
         state = PocketAiUiState(
             inputText = "",
             outputText = "",
@@ -15,13 +15,22 @@ private fun EmptyStatePreview() {
     )
 }
 
-@Preview(name = "Long input and summary", showBackground = true, widthDp = 390, heightDp = 820)
+@Preview(name = "Input long text", showBackground = true, widthDp = 390, heightDp = 820)
 @Composable
-private fun LongInputAndSummaryPreview() {
-    PreviewSummarizer(
+private fun InputLongTextPreview() {
+    PreviewInput(
         state = PocketAiUiState(
             modelReadiness = previewReadyModel(),
             inputText = previewLongInput,
+        ),
+    )
+}
+
+@Preview(name = "Result long summary", showBackground = true, widthDp = 390, heightDp = 820)
+@Composable
+private fun ResultLongSummaryPreview() {
+    PreviewResult(
+        state = previewResultState(
             outputText = previewLongSummary,
             elapsedMs = 5400,
             generationState = GenerationState.Completed,
@@ -29,13 +38,11 @@ private fun LongInputAndSummaryPreview() {
     )
 }
 
-@Preview(name = "Generating", showBackground = true, widthDp = 390, heightDp = 820)
+@Preview(name = "Result generating", showBackground = true, widthDp = 390, heightDp = 820)
 @Composable
-private fun GeneratingPreview() {
-    PreviewSummarizer(
-        state = PocketAiUiState(
-            modelReadiness = previewReadyModel(),
-            inputText = previewLongInput,
+private fun ResultGeneratingPreview() {
+    PreviewResult(
+        state = previewResultState(
             outputText = "- Amit will test the app by Friday.\n- Priya will prepare samples",
             elapsedMs = 2100,
             generationState = GenerationState.Generating,
@@ -43,13 +50,11 @@ private fun GeneratingPreview() {
     )
 }
 
-@Preview(name = "Refining", showBackground = true, widthDp = 390, heightDp = 820)
+@Preview(name = "Result refining", showBackground = true, widthDp = 390, heightDp = 820)
 @Composable
-private fun RefiningPreview() {
-    PreviewSummarizer(
-        state = PocketAiUiState(
-            modelReadiness = previewReadyModel(),
-            inputText = previewLongInput,
+private fun ResultRefiningPreview() {
+    PreviewResult(
+        state = previewResultState(
             outputText = "",
             elapsedMs = 4300,
             generationState = GenerationState.Refining,
@@ -57,16 +62,14 @@ private fun RefiningPreview() {
     )
 }
 
-@Preview(name = "Format warning", showBackground = true, widthDp = 390, heightDp = 820)
+@Preview(name = "Result format warning", showBackground = true, widthDp = 390, heightDp = 820)
 @Composable
-private fun FormatWarningPreview() {
-    PreviewSummarizer(
-        state = PocketAiUiState(
-            modelReadiness = previewReadyModel(),
-            inputText = previewLongInput,
+private fun ResultFormatWarningPreview() {
+    PreviewResult(
+        state = previewResultState(
             outputText = previewLongSummary,
             elapsedMs = 6200,
-            formatWarning = "Summary format warning: expected 1-3 bullets and no extra prose.",
+            formatWarning = "Format warning: expected 1-3 bullets and no extra prose.",
             generationState = GenerationState.Completed,
         ),
     )
@@ -75,10 +78,8 @@ private fun FormatWarningPreview() {
 @Preview(name = "Large font narrow", showBackground = true, widthDp = 320, heightDp = 720, fontScale = 1.6f)
 @Composable
 private fun LargeFontNarrowPreview() {
-    PreviewSummarizer(
-        state = PocketAiUiState(
-            modelReadiness = previewReadyModel(),
-            inputText = previewLongInput,
+    PreviewResult(
+        state = previewResultState(
             outputText = previewLongSummary,
             elapsedMs = 5000,
             generationState = GenerationState.Completed,
@@ -87,7 +88,7 @@ private fun LargeFontNarrowPreview() {
 }
 
 @Preview(
-    name = "Dark theme",
+    name = "Dark result",
     showBackground = true,
     widthDp = 390,
     heightDp = 820,
@@ -95,10 +96,8 @@ private fun LargeFontNarrowPreview() {
 )
 @Composable
 private fun DarkThemePreview() {
-    PreviewSummarizer(
-        state = PocketAiUiState(
-            modelReadiness = previewReadyModel(),
-            inputText = previewLongInput,
+    PreviewResult(
+        state = previewResultState(
             outputText = previewLongSummary,
             elapsedMs = 5000,
             generationState = GenerationState.Completed,
@@ -108,21 +107,34 @@ private fun DarkThemePreview() {
 }
 
 @Composable
-private fun PreviewSummarizer(
+private fun PreviewInput(
     state: PocketAiUiState,
     darkTheme: Boolean = false,
 ) {
     PocketAiTheme(darkTheme = darkTheme) {
-        SummarizerScreen(
-            state = state,
+        InputScreen(
+            state = state.copy(destination = PocketAiDestination.Input),
             onHistory = {},
             onImport = {},
             onTextChange = {},
-            onExpandEditor = {},
             onSummarise = {},
+        )
+    }
+}
+
+@Composable
+private fun PreviewResult(
+    state: PocketAiUiState,
+    darkTheme: Boolean = false,
+) {
+    PocketAiTheme(darkTheme = darkTheme) {
+        ResultScreen(
+            state = state.copy(destination = PocketAiDestination.Result),
+            onBack = {},
             onCancel = {},
             onCopySummary = {},
             onSave = {},
+            onEditSource = {},
         )
     }
 }
@@ -134,6 +146,37 @@ private fun previewReadyModel(): ModelReadiness.Ready =
             sizeBytes = 1_100_000_000,
             path = "/app/private/model.gguf",
         ),
+    )
+
+private fun previewResultState(
+    outputText: String,
+    elapsedMs: Long,
+    generationState: GenerationState,
+    formatWarning: String? = null,
+): PocketAiUiState =
+    PocketAiUiState(
+        destination = PocketAiDestination.Result,
+        modelReadiness = previewReadyModel(),
+        inputText = previewLongInput,
+        activeSourceText = previewLongInput,
+        outputText = outputText,
+        elapsedMs = elapsedMs,
+        formatWarning = formatWarning,
+        generationState = generationState,
+        completedSummary = if (generationState == GenerationState.Completed) {
+            CompletedSummarySnapshot(
+                resultId = 1L,
+                sourceText = previewLongInput,
+                summaryText = outputText,
+                durationMs = elapsedMs,
+                refinementOccurred = formatWarning != null,
+                formatWarning = formatWarning,
+                modelName = "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+                modelSizeBytes = 1_100_000_000,
+            )
+        } else {
+            null
+        },
     )
 
 private const val previewLongInput =

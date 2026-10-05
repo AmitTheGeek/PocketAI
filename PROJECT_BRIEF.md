@@ -9,7 +9,8 @@ PocketAI is an offline Android summarisation prototype for situations where conn
 - Import a user-downloaded GGUF model through Android's file picker.
 - Copy the GGUF to app-private storage.
 - Run local CPU inference through llama.cpp.
-- Summarise one pasted text input.
+- Edit one pasted text input on a dedicated Input screen.
+- Open a dedicated Result screen immediately after preparation passes.
 - Stream output while generation is running.
 - Support cancellation and an immediate clean follow-up request.
 - Validate summary shape as 1-3 bullets and retry once when the shape is invalid.
@@ -35,3 +36,5 @@ On October 4, 2026, the prototype was installed and run on the connected OnePlus
 The user later confirmed baseline offline/airplane-mode inference worked on the OnePlus 8 Pro. The structural validator, one-retry coordinator, Room-backed save/history logic, and Task 004 lifecycle/import/navigation recovery changes pass JVM unit tests.
 
 Latest feature acceptance is still pending on the phone: retry during refinement, saved-history flow, lifecycle reopen, failed-load recovery, same-filename model replacement, system Back routing, and the full manual evaluation checklist have not yet been validated on-device.
+
+Task 006 adds the separated Input/Result flow in source. Its unit tests, connected UI tests, APK build, and physical-device acceptance are still pending in this environment because Gradle execution is currently blocked by sandbox restrictions.

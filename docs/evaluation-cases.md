@@ -160,6 +160,6 @@ Status as of October 4, 2026: the app has run offline-style local summaries on t
 - [ ] Pending: Finish and reopen the Activity within the same app process, then verify importing/summarizing still works and history remains browsable.
 - [ ] Pending: Attempt to import an invalid or incompatible GGUF, then import a valid GGUF and verify the valid model loads without restarting the app.
 - [ ] Pending: Import two different GGUF files that have the same display filename and verify the second selected file becomes the active model.
-- [ ] Pending: Use system Back from Detail to History, from History to Summarizer, then from Summarizer to normal system behavior.
+- [ ] Pending: Use system Back from Detail to History, from History to Input, then from Input to normal system behavior.
 - [ ] Pending: Save a summary, force-stop/relaunch, reopen it from History, copy the saved summary, delete it, and verify it stays deleted.
 - [ ] Pending: Cancel during refinement and immediately start a fresh request, verifying no stale cancelled output appears.

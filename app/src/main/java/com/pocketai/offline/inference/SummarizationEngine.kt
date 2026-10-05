@@ -10,6 +10,8 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -19,10 +21,17 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+data class LoadedModelInfo(
+    val name: String,
+    val sizeBytes: Long,
+    val path: String,
+)
+
 interface SummarizationEngine {
+    val loadedModel: StateFlow<LoadedModelInfo?>
     val contextWindowTokens: Int
     val maxGeneratedTokens: Int
-    suspend fun loadModel(modelFile: File)
+    suspend fun loadModel(modelFile: File, displayName: String)
     suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int
     fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String>
     fun cancel()
@@ -45,6 +54,9 @@ class LlamaCppSummarizationEngine(
     private val operationLock = Mutex()
     private val llamaEngineHolder = lazy(SYNCHRONIZED, engineProvider)
     private var loadedModelPath: String? = null
+    private val mutableLoadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+
+    override val loadedModel: StateFlow<LoadedModelInfo?> = mutableLoadedModel
 
     override var contextWindowTokens: Int = CONTEXT_WINDOW_TOKENS
         private set
@@ -56,14 +68,17 @@ class LlamaCppSummarizationEngine(
     private val llamaEngine: InferenceEngine
         get() = llamaEngineHolder.value
 
-    override suspend fun loadModel(modelFile: File) = withContext(dispatcher) {
+    override suspend fun loadModel(modelFile: File, displayName: String) = withContext(dispatcher) {
         operationLock.withLock {
             require(modelFile.exists() && modelFile.isFile && modelFile.canRead()) {
                 "Model file is not readable: ${modelFile.absolutePath}"
             }
 
             val engine = awaitInitializedEngineForLoad()
-            if (loadedModelPath == modelFile.absolutePath) return@withLock
+            if (loadedModelPath == modelFile.absolutePath) {
+                mutableLoadedModel.value = modelFile.toLoadedModelInfo(displayName)
+                return@withLock
+            }
 
             unloadCurrentModelIfNeeded(engine)
 
@@ -72,10 +87,18 @@ class LlamaCppSummarizationEngine(
                 engine.setSystemPrompt(SYSTEM_PROMPT)
                 contextWindowTokens = engine.contextWindowTokens()
                 loadedModelPath = modelFile.absolutePath
+                mutableLoadedModel.value = modelFile.toLoadedModelInfo(displayName)
             } catch (throwable: Throwable) {
-                loadedModelPath = null
-                contextWindowTokens = CONTEXT_WINDOW_TOKENS
-                resetAfterLoadFailure(engine)
+                val cleanupFailure = runCatching {
+                    resetAfterLoadFailure(engine)
+                }.exceptionOrNull()
+                if (cleanupFailure == null) {
+                    loadedModelPath = null
+                    mutableLoadedModel.value = null
+                    contextWindowTokens = CONTEXT_WINDOW_TOKENS
+                } else {
+                    throwable.addSuppressed(cleanupFailure)
+                }
                 throw throwable
             }
         }
@@ -116,17 +139,17 @@ class LlamaCppSummarizationEngine(
             unloadCurrentModelIfNeeded(engine)
             contextWindowTokens = CONTEXT_WINDOW_TOKENS
             loadedModelPath = null
+            mutableLoadedModel.value = null
         }
     }
 
     override suspend fun close() {
         if (!isEngineInitialized) return
         operationLock.withLock {
-            withContext(Dispatchers.IO) {
-                runCatching { llamaEngine.destroy() }
-            }
+            withContext(Dispatchers.IO) { llamaEngine.destroy() }
             contextWindowTokens = CONTEXT_WINDOW_TOKENS
             loadedModelPath = null
+            mutableLoadedModel.value = null
         }
     }
 
@@ -180,16 +203,24 @@ class LlamaCppSummarizationEngine(
 
     private fun unloadCurrentModelIfNeeded(engine: InferenceEngine) {
         if (loadedModelPath == null && engine.state.value !is InferenceEngine.State.ModelReady) return
-        runCatching { engine.cleanUp() }
+        engine.cleanUp()
         loadedModelPath = null
+        mutableLoadedModel.value = null
         contextWindowTokens = CONTEXT_WINDOW_TOKENS
     }
 
     private fun resetAfterLoadFailure(engine: InferenceEngine) {
         if (engine.state.value is InferenceEngine.State.Error) {
-            runCatching { engine.cleanUp() }
+            engine.cleanUp()
         }
     }
+
+    private fun File.toLoadedModelInfo(displayName: String): LoadedModelInfo =
+        LoadedModelInfo(
+            name = displayName,
+            sizeBytes = length(),
+            path = absolutePath
+        )
 
     private suspend fun awaitReadyEngine(): InferenceEngine {
         val engine = awaitInitializedEngine()

@@ -7,17 +7,22 @@ import com.pocketai.offline.history.NewSavedSummary
 import com.pocketai.offline.history.SavedSummary
 import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.ImportedModelFile
+import com.pocketai.offline.inference.LoadedModelInfo
 import com.pocketai.offline.inference.ModelImporter
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryAttempt
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -45,7 +50,7 @@ class MainViewModelLifecycleTest {
 
         assertEquals(0, engine.closeCount)
         assertEquals("- Fresh result", second.uiState.value.outputText)
-        assertTrue(second.uiState.value.generationState is GenerationState.Completed)
+        assertEquals(GenerationState.Completed, second.uiState.value.generationState)
     }
 
     @Test
@@ -62,6 +67,106 @@ class MainViewModelLifecycleTest {
         assertEquals(0, engine.closeCount)
         assertEquals(0, engine.loadedPaths.size)
         assertEquals(0, engine.summarizeCount)
+    }
+
+    @Test
+    fun invalidInputStaysOnInputWithError() {
+        val engine = RecordingEngine()
+        val viewModel = viewModel(engine = engine, readyModel = true)
+
+        viewModel.updateInput("   ")
+        viewModel.summarize()
+        idleMain()
+
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
+        assertTrue(viewModel.uiState.value.generationState is GenerationState.Failed)
+        assertEquals(0, engine.summarizeCount)
+    }
+
+    @Test
+    fun oversizedInputStaysOnInputWithBudgetError() {
+        val engine = RecordingEngine(promptTokens = 1_700)
+        val viewModel = viewModel(engine = engine, readyModel = true)
+
+        viewModel.updateInput("Large source")
+        viewModel.summarize()
+        idleMain()
+
+        val failure = viewModel.uiState.value.generationState as GenerationState.Failed
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
+        assertTrue(failure.message.contains("Input is too long"))
+        assertEquals(0, engine.summarizeCount)
+    }
+
+    @Test
+    fun validSubmissionOpensResultAndStartsOneRequest() {
+        val engine = RecordingEngine()
+        val viewModel = viewModel(engine = engine, readyModel = true)
+
+        viewModel.summarize()
+        idleMain()
+
+        assertEquals(PocketAiDestination.Result, viewModel.uiState.value.destination)
+        assertEquals(GenerationState.Completed, viewModel.uiState.value.generationState)
+        assertEquals(1, engine.summarizeCount)
+    }
+
+    @Test
+    fun returningToInputPreservesDraft() {
+        val viewModel = viewModel(readyModel = true)
+
+        viewModel.updateInput("Draft survives navigation")
+        viewModel.summarize()
+        idleMain()
+        assertEquals(PocketAiDestination.Result, viewModel.uiState.value.destination)
+
+        assertTrue(viewModel.navigateBack())
+
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
+        assertEquals("Draft survives navigation", viewModel.uiState.value.inputText)
+    }
+
+    @Test
+    fun backDuringGenerationCancelsAndNewWorkWaitsForTermination() = runBlocking {
+        val engine = BlockingThenCompletingEngine()
+        val viewModel = viewModel(engine = engine, readyModel = true)
+
+        viewModel.summarize()
+        idleMain()
+        withTimeout(1_000L) { engine.firstGenerationStarted.await() }
+
+        assertTrue(viewModel.navigateBack())
+        idleMain()
+        withTimeout(1_000L) { engine.cleanupStarted.await() }
+
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
+        assertEquals(GenerationState.Stopping, viewModel.uiState.value.generationState)
+        viewModel.summarize()
+        idleMain()
+        assertEquals(1, engine.summarizeCount)
+
+        engine.allowCleanup.complete(Unit)
+        idleMain()
+        viewModel.summarize()
+        idleMain()
+
+        assertEquals(2, engine.summarizeCount)
+        assertEquals(GenerationState.Completed, viewModel.uiState.value.generationState)
+        assertEquals("- Completed after cancellation", viewModel.uiState.value.outputText)
+        assertEquals(1, engine.cancelCount)
+    }
+
+    @Test
+    fun newViewModelReflectsAlreadyLoadedAppOwnedModel() = runBlocking {
+        val engine = RecordingEngine()
+        val modelFile = tempModelFile("already-loaded")
+
+        engine.loadModel(modelFile, "already-loaded.gguf")
+        val viewModel = viewModel(engine = engine, readyModel = false)
+
+        val readiness = viewModel.uiState.value.modelReadiness as ModelReadiness.Ready
+        assertEquals("already-loaded.gguf", readiness.model.name)
+        assertEquals(modelFile.absolutePath, readiness.model.path)
     }
 
     @Test
@@ -134,28 +239,28 @@ class MainViewModelLifecycleTest {
         idleMain()
         withTimeout(1_000L) { repository.deleteStarted.await() }
 
-        viewModel.openSummarizer()
+        viewModel.openInput()
         repository.allowDelete.complete(Unit)
         idleMain()
 
-        assertEquals(PocketAiDestination.Summarizer, viewModel.uiState.value.destination)
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
     }
 
     @Test
-    fun systemBackRoutesDetailHistorySummarizerThenFallsThrough() {
+    fun systemBackRoutesDetailHistoryInputThenFallsThrough() {
         val viewModel = viewModel(readyModel = false)
 
         assertFalse(viewModel.navigateBack())
 
         viewModel.openHistory()
         assertTrue(viewModel.navigateBack())
-        assertEquals(PocketAiDestination.Summarizer, viewModel.uiState.value.destination)
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
 
         viewModel.openSummaryDetail(1L)
         assertTrue(viewModel.navigateBack())
         assertEquals(PocketAiDestination.History, viewModel.uiState.value.destination)
         assertTrue(viewModel.navigateBack())
-        assertEquals(PocketAiDestination.Summarizer, viewModel.uiState.value.destination)
+        assertEquals(PocketAiDestination.Input, viewModel.uiState.value.destination)
         assertFalse(viewModel.navigateBack())
     }
 
@@ -208,7 +313,10 @@ class MainViewModelLifecycleTest {
 
     private class RecordingEngine(
         private val failLoadPaths: Set<String> = emptySet(),
+        private val promptTokens: Int = 100,
     ) : SummarizationEngine {
+        private val mutableLoadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+        override val loadedModel: StateFlow<LoadedModelInfo?> = mutableLoadedModel
         override val contextWindowTokens: Int = 2_048
         override val maxGeneratedTokens: Int = 512
         val loadedPaths = mutableListOf<String>()
@@ -217,14 +325,19 @@ class MainViewModelLifecycleTest {
         var unloadCount = 0
         var closeCount = 0
 
-        override suspend fun loadModel(modelFile: File) {
+        override suspend fun loadModel(modelFile: File, displayName: String) {
             loadedPaths += modelFile.absolutePath
             if (modelFile.absolutePath in failLoadPaths) {
                 throw IOException("native load failed")
             }
+            mutableLoadedModel.value = LoadedModelInfo(
+                name = displayName,
+                sizeBytes = modelFile.length(),
+                path = modelFile.absolutePath
+            )
         }
 
-        override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
+        override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = promptTokens
 
         override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
             summarizeCount += 1
@@ -237,11 +350,54 @@ class MainViewModelLifecycleTest {
 
         override suspend fun unloadModel() {
             unloadCount += 1
+            mutableLoadedModel.value = null
         }
 
         override suspend fun close() {
             closeCount += 1
+            mutableLoadedModel.value = null
         }
+    }
+
+    private class BlockingThenCompletingEngine : SummarizationEngine {
+        override val loadedModel: StateFlow<LoadedModelInfo?> = MutableStateFlow(null)
+        override val contextWindowTokens: Int = 2_048
+        override val maxGeneratedTokens: Int = 512
+        val firstGenerationStarted = CompletableDeferred<Unit>()
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val allowCleanup = CompletableDeferred<Unit>()
+        var summarizeCount = 0
+        var cancelCount = 0
+
+        override suspend fun loadModel(modelFile: File, displayName: String) = Unit
+
+        override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
+
+        override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
+            summarizeCount += 1
+            if (summarizeCount == 1) {
+                firstGenerationStarted.complete(Unit)
+                emit("- Partial")
+                try {
+                    awaitCancellation()
+                } finally {
+                    cleanupStarted.complete(Unit)
+                    withContext(NonCancellable) {
+                        allowCleanup.await()
+                    }
+                }
+            } else {
+                emit("- Completed after cancellation")
+            }
+        }
+
+        override fun cancel() {
+            cancelCount += 1
+        }
+
+        override suspend fun unloadModel() = Unit
+
+        override suspend fun close() = Unit
     }
 
     private class QueueModelImporter(

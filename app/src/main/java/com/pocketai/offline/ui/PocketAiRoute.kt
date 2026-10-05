@@ -5,9 +5,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -16,7 +13,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 internal fun PocketAiRoute(viewModel: MainViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
-    var expandedEditorOpen by rememberSaveable { mutableStateOf(false) }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -24,42 +20,33 @@ internal fun PocketAiRoute(viewModel: MainViewModel) {
         uri?.let(viewModel::importModel)
     }
 
-    BackHandler(enabled = expandedEditorOpen) {
-        expandedEditorOpen = false
-    }
-
     BackHandler(
-        enabled = !expandedEditorOpen && state.destination != PocketAiDestination.Summarizer
+        enabled = state.destination != PocketAiDestination.Input
     ) {
         viewModel.navigateBack()
     }
 
-    if (expandedEditorOpen) {
-        ExpandedSourceEditor(
-            text = state.inputText,
-            enabled = !state.isBusy,
-            onTextChange = viewModel::updateInput,
-            onDone = { expandedEditorOpen = false },
-        )
-        return
-    }
-
     when (state.destination) {
-        PocketAiDestination.Summarizer -> SummarizerScreen(
+        PocketAiDestination.Input -> InputScreen(
             state = state,
             onHistory = viewModel::openHistory,
             onImport = { filePicker.launch(arrayOf("application/octet-stream", "*/*")) },
             onTextChange = viewModel::updateInput,
-            onExpandEditor = { expandedEditorOpen = true },
             onSummarise = viewModel::summarize,
+        )
+
+        PocketAiDestination.Result -> ResultScreen(
+            state = state,
+            onBack = { viewModel.navigateBack() },
             onCancel = viewModel::cancelSummary,
             onCopySummary = { text -> clipboard.setText(AnnotatedString(text)) },
             onSave = viewModel::saveCurrentSummary,
+            onEditSource = viewModel::openInput,
         )
 
         PocketAiDestination.History -> HistoryScreen(
             state = state,
-            onBack = viewModel::openSummarizer,
+            onBack = viewModel::openInput,
             onOpenSummary = viewModel::openSummaryDetail,
         )
 

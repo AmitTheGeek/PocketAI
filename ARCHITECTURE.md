@@ -27,14 +27,17 @@ Task 004 rechecked patch application against the local pinned llama.cpp checkout
 
 ## Generation Data Flow
 
-1. Compose forwards import, text-change, summarise, cancel, save, history, detail, copy, and delete actions to `MainViewModel`.
+1. Compose forwards import, text-change, summarise, cancel, save, history, detail, copy, edit-source, and delete actions to `MainViewModel`.
 2. `MainViewModel` owns immutable `PocketAiUiState` through `StateFlow`.
-3. `SummaryGenerationCoordinator` checks blank input and prompt token budget before generation.
-4. The coordinator streams the initial attempt through `SummarizationEngine`.
-5. `SummaryFormatValidator` checks only structure: 1-3 non-empty bullet items and no extra prose.
-6. If the first attempt is invalid, the coordinator emits `Refining`, clears first output in the UI, and retries once from the original source text.
-7. If the retry is still invalid, the retry output is retained and a warning is shown. The warning explicitly avoids claiming factual validation.
-8. On completion, the ViewModel captures the source snapshot, final summary, elapsed time, refinement flag, warning, and available model identification for optional saving.
+3. On Summarise, `MainViewModel` captures an immutable source snapshot and enters `Preparing`.
+4. `SummaryGenerationCoordinator.prepare(...)` checks blank input and the actual formatted prompt token budget before Result navigation.
+5. If preparation fails, the app remains on Input and shows the error without starting inference.
+6. If preparation succeeds, the ViewModel navigates once to Result and starts streaming; no composable starts generation from recomposition.
+7. The coordinator streams the initial attempt through `SummarizationEngine`.
+8. `SummaryFormatValidator` checks only structure: 1-3 non-empty bullet items and no extra prose.
+9. If the first attempt is invalid, the coordinator emits `Refining`, clears first output in the UI, and retries once from the original source text.
+10. If the retry is still invalid, the retry output is retained and a warning is shown. The warning explicitly avoids claiming factual validation.
+11. On completion, the ViewModel captures the prepared source snapshot, final summary, elapsed time, refinement flag, warning, and available model identification for optional saving.
 
 ## History Data Flow
 
@@ -61,15 +64,17 @@ Model readiness:
 Generation state:
 
 - `Idle`
+- `Preparing`
 - `Generating`
 - `Refining`
+- `Stopping`
 - `Completed`
 - `Cancelled`
 - `Failed`
 
-Additional UI state tracks destination (`Summarizer`, `History`, `Detail`), history loading/error/loaded state, detail loading/error/not-found/loaded state, completed-result snapshot, and save state (`Idle`, `Saving`, `Saved`, `Error`).
+Additional UI state tracks destination (`Input`, `Result`, `History`, `Detail`), the active source snapshot, history loading/error/loaded state, detail loading/error/not-found/loaded state, completed-result snapshot, and save state (`Idle`, `Saving`, `Saved`, `Error`).
 
-Import and summary actions are disabled while a model import/load or generation/refinement is active. This prevents replacing the model during inference. Save is explicit and separate; duplicate save taps for the same displayed result are ignored.
+Import and summary actions are disabled while a model import/load or generation/preparation/refinement/stop is active. This prevents replacing the model during inference and keeps a new request from starting until cancellation cleanup has actually completed. Save is explicit and separate; duplicate save taps for the same displayed result are ignored.
 
 ## Room Schema
 
@@ -97,6 +102,8 @@ The manifest currently sets `android:allowBackup="false"`. With that setting, ap
 
 `PocketAiContainer` is the app-process owner of the local llama.cpp runtime. It lazily creates one `LlamaCppSummarizationEngine` and keeps it shared across `MainViewModel` instances. `MainViewModel.onCleared()` cancels only its active request/job references; it does not permanently close the native runtime. This prevents Activity recreation from leaving future ViewModels with a destroyed upstream singleton.
 
+`SummarizationEngine.loadedModel` exposes authoritative loaded-model metadata from the app-owned runtime. A new `MainViewModel` seeds `ModelReadiness.Ready` from that value when a model is already loaded, so Activity recreation does not incorrectly show `NoModel`.
+
 The upstream `AiChat.getInferenceEngine(...)` returns a process singleton. Because `destroy()` cancels that singleton's internal coroutine scope and there is no public replacement API, permanent shutdown is reserved for the app container/test teardown through `PocketAiContainer.closeNativeRuntime()`. That method closes only if the engine was initialized, so browsing history alone does not initialize native code just to clean it up.
 
 Runtime operations are intentionally separate:
@@ -121,7 +128,9 @@ Current settings:
 
 ## Cancellation
 
-Cancel requests call `SummarizationEngine.cancel()` and cancel the ViewModel job. The same path covers initial generation and refinement. UI updates are guarded by a monotonically increasing request id so cancelled or older jobs cannot append tokens to a newer request.
+Cancel requests call `SummarizationEngine.cancel()` and cancel the ViewModel job. The same path covers initial generation and refinement. Back from Result during active work uses the same stop path, immediately returns to Input, and shows `Stopping` until the underlying coroutine finishes. The Cancel button stops work but stays on Result with the partial text available for copying and not saving.
+
+UI updates are guarded by a monotonically increasing request id so cancelled or older jobs cannot append tokens to a newer request. A new request cannot start while `Stopping` is active.
 
 Native generation also receives a cancellation flag. The unit tests use fakes to verify coordinator and ViewModel cancellation behaviours, but those tests do not prove native cleanup safety on their own.
 

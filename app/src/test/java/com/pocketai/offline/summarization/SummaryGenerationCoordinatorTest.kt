@@ -1,11 +1,13 @@
 package com.pocketai.offline.summarization
 
 import com.pocketai.offline.inference.SummarizationEngine
+import com.pocketai.offline.inference.LoadedModelInfo
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -90,11 +92,12 @@ class SummaryGenerationCoordinatorTest {
         val started = CompletableDeferred<Unit>()
         val cancelled = CompletableDeferred<Unit>()
         val engine = object : SummarizationEngine {
+            override val loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
             override val contextWindowTokens: Int = 2048
             override val maxGeneratedTokens: Int = 512
             val attempts = mutableListOf<SummaryAttempt>()
 
-            override suspend fun loadModel(modelFile: File) = Unit
+            override suspend fun loadModel(modelFile: File, displayName: String) = Unit
             override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
 
             override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
@@ -132,11 +135,12 @@ class SummaryGenerationCoordinatorTest {
         val refinementStarted = CompletableDeferred<Unit>()
         val refinementCancelled = CompletableDeferred<Unit>()
         val engine = object : SummarizationEngine {
+            override val loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
             override val contextWindowTokens: Int = 2048
             override val maxGeneratedTokens: Int = 512
             val attempts = mutableListOf<SummaryAttempt>()
 
-            override suspend fun loadModel(modelFile: File) = Unit
+            override suspend fun loadModel(modelFile: File, displayName: String) = Unit
             override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
 
             override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
@@ -236,10 +240,11 @@ class SummaryGenerationCoordinatorTest {
         override val contextWindowTokens: Int = 2048,
         override val maxGeneratedTokens: Int = 512,
     ) : SummarizationEngine {
+        override val loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
         val attempts = mutableListOf<SummaryAttempt>()
         val sources = mutableListOf<String>()
 
-        override suspend fun loadModel(modelFile: File) = Unit
+        override suspend fun loadModel(modelFile: File, displayName: String) = Unit
         override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int =
             tokenCounts[attempt] ?: 100
 
@@ -263,11 +268,12 @@ class SummaryGenerationCoordinatorTest {
     private class RestartableEngine(
         private val firstStarted: CompletableDeferred<Unit>,
     ) : SummarizationEngine {
+        override val loadedModel = MutableStateFlow<LoadedModelInfo?>(null)
         override val contextWindowTokens: Int = 2048
         override val maxGeneratedTokens: Int = 512
         private var requestCount = 0
 
-        override suspend fun loadModel(modelFile: File) = Unit
+        override suspend fun loadModel(modelFile: File, displayName: String) = Unit
         override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
 
         override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {

@@ -1,10 +1,13 @@
 package com.pocketai.offline.ui
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.rememberScrollState
@@ -12,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -26,52 +30,29 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SummarizerScreen(
+internal fun InputScreen(
     state: PocketAiUiState,
     onHistory: () -> Unit,
     onImport: () -> Unit,
     onTextChange: (String) -> Unit,
-    onExpandEditor: () -> Unit,
     onSummarise: () -> Unit,
-    onCancel: () -> Unit,
-    onCopySummary: (String) -> Unit,
-    onSave: () -> Unit,
 ) {
-    val scrollState = rememberScrollState()
-    val coroutineScope = rememberCoroutineScope()
-    var followOutput by remember { mutableStateOf(true) }
-
-    LaunchedEffect(scrollState) {
-        snapshotFlow { scrollState.isScrollInProgress to scrollState.isNearEnd() }
-            .collect { (isScrolling, isNearEnd) ->
-                if (isScrolling) followOutput = isNearEnd
-            }
-    }
-
-    LaunchedEffect(state.generationState) {
-        if (state.isGenerating) followOutput = true
-    }
-
-    LaunchedEffect(state.outputText, state.generationState, followOutput) {
-        if (state.outputText.isNotBlank() && state.isGenerating && followOutput) {
-            withFrameNanos { }
-            scrollState.animateScrollTo(scrollState.maxValue)
-        }
-    }
-
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
@@ -94,48 +75,331 @@ internal fun SummarizerScreen(
                 },
             )
         },
+        bottomBar = {
+            InputBottomBar(
+                state = state,
+                onSummarise = onSummarise,
+            )
+        },
     ) { paddingValues ->
         Column(
             modifier = Modifier
+                .fillMaxSize()
                 .padding(paddingValues)
-                .verticalScroll(scrollState)
-                .imePadding()
                 .padding(horizontal = 20.dp, vertical = 16.dp)
-                .testTag("main-scroll"),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+                .testTag("inputScreen"),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             ModelStatusSection(
                 state = state,
                 onImport = onImport,
             )
 
-            SourceTextSection(
+            InputFeedback(state)
+
+            SectionTitle(text = "Source text")
+            SourceTextEditor(
                 text = state.inputText,
                 enabled = !state.isBusy,
                 onTextChange = onTextChange,
-                onExpandEditor = onExpandEditor,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
             )
+        }
+    }
+}
 
-            PrimaryGenerationAction(
-                state = state,
-                onSummarise = onSummarise,
-                onCancel = onCancel,
-            )
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ResultScreen(
+    state: PocketAiUiState,
+    onBack: () -> Unit,
+    onCancel: () -> Unit,
+    onCopySummary: (String) -> Unit,
+    onSave: () -> Unit,
+    onEditSource: () -> Unit,
+) {
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    var followOutput by remember(state.activeSourceText) { mutableStateOf(true) }
+    val userScrollConnection = remember(scrollState) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput) {
+                    followOutput = scrollState.isNearEnd()
+                }
+                return Offset.Zero
+            }
 
-            SummarySection(
-                state = state,
-                showJumpToLatest = state.isGenerating &&
-                    state.outputText.isNotBlank() &&
-                    !followOutput,
-                onJumpToLatest = {
-                    followOutput = true
-                    coroutineScope.launch {
-                        scrollState.animateScrollTo(scrollState.maxValue)
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                if (source == NestedScrollSource.UserInput) {
+                    followOutput = scrollState.isNearEnd()
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
+    LaunchedEffect(scrollState.maxValue, followOutput, state.destination) {
+        if (state.destination == PocketAiDestination.Result && followOutput) {
+            delay(80)
+            scrollState.scrollTo(scrollState.maxValue)
+        }
+    }
+
+    Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            TopAppBar(
+                title = { Text("Summary") },
+                navigationIcon = {
+                    TextButton(
+                        onClick = onBack,
+                        modifier = Modifier.semantics {
+                            contentDescription = "Return to source input"
+                        },
+                    ) {
+                        Text("Back")
                     }
                 },
+            )
+        },
+        bottomBar = {
+            ResultBottomBar(
+                state = state,
+                onCancel = onCancel,
                 onCopySummary = onCopySummary,
                 onSave = onSave,
+                onEditSource = onEditSource,
             )
+        },
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .nestedScroll(userScrollConnection)
+                .verticalScroll(scrollState)
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .testTag("resultScroll"),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            ResultHeader(state)
+            ResultFeedback(state)
+
+            if (state.isGenerating) {
+                StatusBand(message = "Going back stops this summary.")
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            if (state.outputText.isNotBlank()) {
+                SelectableSummaryText(text = state.outputText)
+            } else {
+                Text(
+                    text = if (state.isGenerating) {
+                        "Waiting for the first tokens..."
+                    } else {
+                        "Summary will appear here."
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp)
+                        .testTag("summaryEmptyState"),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (state.outputText.isNotBlank() && !followOutput) {
+                OutlinedButton(
+                    onClick = {
+                        followOutput = true
+                        coroutineScope.launch {
+                            scrollState.scrollTo(scrollState.maxValue)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("jumpToLatestButton")
+                        .semantics { contentDescription = "Jump to latest summary text" },
+                ) {
+                    Text("Jump to latest")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InputBottomBar(
+    state: PocketAiUiState,
+    onSummarise: () -> Unit,
+) {
+    Surface(
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onSummarise,
+                enabled = state.canSummarize,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("summariseButton")
+                    .semantics { contentDescription = "Summarise source text" },
+            ) {
+                Text("Summarise")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResultBottomBar(
+    state: PocketAiUiState,
+    onCancel: () -> Unit,
+    onCopySummary: (String) -> Unit,
+    onSave: () -> Unit,
+    onEditSource: () -> Unit,
+) {
+    var copiedText by remember(state.outputText) { mutableStateOf<String?>(null) }
+
+    Surface(
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when (state.generationState) {
+                GenerationState.Preparing,
+                GenerationState.Generating,
+                GenerationState.Refining,
+                GenerationState.Stopping -> {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        enabled = state.generationState != GenerationState.Stopping,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("cancelButton")
+                            .semantics { contentDescription = "Cancel current summary generation" },
+                    ) {
+                        Text(if (state.generationState == GenerationState.Stopping) "Stopping..." else "Cancel")
+                    }
+                }
+
+                GenerationState.Completed -> {
+                    ResponsiveActions(
+                        first = {
+                            OutlinedButton(
+                                onClick = {
+                                    copiedText = state.outputText
+                                    onCopySummary(state.outputText)
+                                },
+                                enabled = state.outputText.isNotBlank(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("summaryCopyButton")
+                                    .semantics { contentDescription = "Copy complete summary" },
+                            ) {
+                                Text("Copy")
+                            }
+                        },
+                        second = {
+                            Button(
+                                onClick = onSave,
+                                enabled = state.canSave,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("summarySaveButton")
+                                    .semantics { contentDescription = "Save completed summary" },
+                            ) {
+                                Text("Save")
+                            }
+                        },
+                    )
+                    OutlinedButton(
+                        onClick = onEditSource,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("editSourceButton")
+                            .semantics { contentDescription = "Return to edit source text" },
+                    ) {
+                        Text("Edit source")
+                    }
+                }
+
+                GenerationState.Cancelled -> {
+                    ResponsiveActions(
+                        first = {
+                            OutlinedButton(
+                                onClick = {
+                                    copiedText = state.outputText
+                                    onCopySummary(state.outputText)
+                                },
+                                enabled = state.outputText.isNotBlank(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("summaryCopyButton")
+                                    .semantics { contentDescription = "Copy partial summary" },
+                            ) {
+                                Text("Copy partial")
+                            }
+                        },
+                        second = {
+                            Button(
+                                onClick = onEditSource,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("editSourceButton")
+                                    .semantics { contentDescription = "Return to edit source text" },
+                            ) {
+                                Text("Edit source")
+                            }
+                        },
+                    )
+                }
+
+                is GenerationState.Failed -> {
+                    Button(
+                        onClick = onEditSource,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("editSourceButton")
+                            .semantics { contentDescription = "Return to edit source text" },
+                    ) {
+                        Text("Edit source")
+                    }
+                }
+
+                GenerationState.Idle -> Unit
+            }
+
+            if (copiedText == state.outputText && state.outputText.isNotBlank()) {
+                Text(
+                    text = "Copied summary.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }
@@ -185,30 +449,38 @@ private fun ModelStatusSection(
 }
 
 @Composable
-private fun PrimaryGenerationAction(
-    state: PocketAiUiState,
-    onSummarise: () -> Unit,
-    onCancel: () -> Unit,
-) {
-    if (state.isGenerating) {
-        OutlinedButton(
-            onClick = onCancel,
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics { contentDescription = "Cancel current summary generation" },
-        ) {
-            Text("Cancel")
+private fun ResultHeader(state: PocketAiUiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SectionTitle(text = "Summary")
+        Text(
+            text = "${formatElapsed(state.elapsedMs)} elapsed",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun InputFeedback(state: PocketAiUiState) {
+    state.loadingMessage?.let { LoadingBand(message = it) }
+    state.errorMessage?.let { ErrorBand(message = it) }
+}
+
+@Composable
+private fun ResultFeedback(state: PocketAiUiState) {
+    state.loadingMessage?.let { LoadingBand(message = it) }
+    state.errorMessage?.let { ErrorBand(message = it) }
+    state.warningMessage?.let { WarningBand(message = it) }
+    state.saveMessage?.let {
+        if (state.saveState is SaveState.Error) {
+            ErrorBand(message = it)
+        } else {
+            StatusBand(message = it)
         }
-    } else {
-        Button(
-            onClick = onSummarise,
-            enabled = state.canSummarize,
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics { contentDescription = "Summarise source text" },
-        ) {
-            Text("Summarise")
-        }
+    }
+
+    if (state.generationState == GenerationState.Cancelled && state.outputText.isNotBlank()) {
+        StatusBand(message = "Cancelled. Partial text is kept for review but cannot be saved.")
     }
 }
 
@@ -230,5 +502,5 @@ private fun PocketAiUiState.modelStatusDetail(): String =
         is ModelReadiness.ModelError -> readiness.message
     }
 
-private fun androidx.compose.foundation.ScrollState.isNearEnd(): Boolean =
-    value >= maxValue - 24
+private fun ScrollState.isNearEnd(): Boolean =
+    value >= maxValue - 48
