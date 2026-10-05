@@ -113,6 +113,7 @@ data class PocketAiUiState(
     val modelReadiness: ModelReadiness = ModelReadiness.NoModel,
     val generationState: GenerationState = GenerationState.Idle,
     val inputText: String = SAMPLE_PARAGRAPH,
+    val activeRequestId: Long = 0L,
     val activeSourceText: String? = null,
     val outputText: String = "",
     val elapsedMs: Long = 0L,
@@ -368,6 +369,7 @@ class MainViewModel(
             it.copy(
                 destination = PocketAiDestination.Input,
                 generationState = GenerationState.Preparing,
+                activeRequestId = requestId,
                 activeSourceText = sourceSnapshot,
                 outputText = "",
                 elapsedMs = 0L,

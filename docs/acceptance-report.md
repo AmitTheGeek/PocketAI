@@ -15,6 +15,47 @@ Task 006 replaces the combined summariser with separate Compose Input and Result
 - APK refresh: pending; `outputs/PocketAI-debug.apk` still reflects the previous successful baseline unless a later build is run outside the blocker.
 - `INTERNET` permission and packaged-model APK checks: pending for the Task 006 APK because no refreshed APK was produced.
 
+## Task 006B Checks
+
+Source changes:
+
+- Moved Jump to latest into the Result `Scaffold` floating action area so it stays reachable while the reader is above the latest text.
+- Replaced the delayed `maxValue` auto-follow effect with a conflated, bounded-rate scroll collector. Continuous content-height updates no longer restart the wait indefinitely.
+- Added `activeRequestId` to UI state so follow intent resets for a new request even when the source text is unchanged.
+- Added/updated connected Compose regressions for Jump visibility, continuous synthetic streaming follow, manual-scroll persistence through refinement, and Cancel reachability.
+
+Local checks on October 5, 2026:
+
+- `git diff --check`: passed.
+- Source manifest scan with `rg "INTERNET|uses-permission" app/src/main`: no matches.
+- Tracked model asset scan excluding `.git`, `work`, and `outputs`: no `.gguf`, `.safetensors`, or `*qwen*.bin` files found.
+
+Gradle verification attempt:
+
+- Exact command: `JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew testDebugUnitTest`
+- Result: failed before compilation started.
+- Relevant error excerpt: `java.io.FileNotFoundException: /Users/batcomputer/.gradle/wrapper/dists/gradle-8.14.3-bin/.../gradle-8.14.3-bin.zip.lck (Operation not permitted)`.
+- Escalated rerun: requested for the same command so Gradle could use the existing wrapper cache; rejected by the execution policy.
+- `assembleDebug`: not attempted after the unit-test Gradle wrapper failure because the same wrapper/cache access is required and repeated workaround attempts were stopped.
+- Connected UI tests: not run.
+- Refreshed `outputs/PocketAI-debug.apk`: pending.
+- Tested commit and APK checksum: pending until a successful build produces a refreshed APK.
+
+Commands for Amit to run in a normal local terminal:
+
+```sh
+JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew testDebugUnitTest
+JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew assembleDebug
+cp app/build/outputs/apk/debug/app-debug.apk outputs/PocketAI-debug.apk
+shasum -a 256 outputs/PocketAI-debug.apk
+```
+
+If a device is connected and authorized:
+
+```sh
+JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew connectedDebugAndroidTest
+```
+
 ## Device Checks
 
 Not performed after Task 006 in this environment.

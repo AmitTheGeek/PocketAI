@@ -149,7 +149,7 @@ class SummaryReadingUiTest {
     }
 
     @Test
-    fun jumpToLatestAppearsAfterManualScrollAway() {
+    fun jumpToLatestVisibleWhileReadingEarlierContent() {
         val finalMarker = "BOTTOM-MARKER-911"
         val longSummary = (1..70).joinToString(separator = "\n") { index ->
             "- Streaming line $index"
@@ -181,6 +181,48 @@ class SummaryReadingUiTest {
         composeRule
             .onNodeWithTag("summaryLine-70", useUnmergedTree = true)
             .assertIsDisplayed()
+    }
+
+    @Test
+    fun continuousSyntheticStreamingFollowsBeforeGenerationEnds() {
+        composeRule.mainClock.autoAdvance = false
+        try {
+            var state by mutableStateOf(streamingResultState("- Streaming line 1"))
+
+            composeRule.setContent {
+                PocketAiTheme {
+                    ResultScreen(
+                        state = state,
+                        onBack = {},
+                        onCancel = {},
+                        onCopySummary = {},
+                        onSave = {},
+                        onEditSource = {},
+                    )
+                }
+            }
+
+            (2..48).forEach { line ->
+                composeRule.runOnIdle {
+                    state = state.copy(
+                        outputText = (1..line).joinToString(separator = "\n") { index ->
+                            "- Streaming line $index"
+                        }
+                    )
+                }
+                composeRule.mainClock.advanceTimeBy(120L)
+            }
+
+            composeRule.runOnIdle {
+                assertEquals(GenerationState.Generating, state.generationState)
+            }
+            composeRule
+                .onNodeWithTag("summaryLine-47", useUnmergedTree = true)
+                .assertIsDisplayed()
+            composeRule.onNodeWithTag("cancelButton").assertIsDisplayed()
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
     }
 
     @Test
@@ -229,6 +271,7 @@ class SummaryReadingUiTest {
             destination = PocketAiDestination.Result,
             modelReadiness = readyModel(),
             inputText = "Source text",
+            activeRequestId = 1L,
             activeSourceText = "Source text",
             outputText = outputText,
             generationState = GenerationState.Completed,
@@ -250,6 +293,7 @@ class SummaryReadingUiTest {
             destination = PocketAiDestination.Result,
             modelReadiness = readyModel(),
             inputText = "Source text",
+            activeRequestId = 1L,
             activeSourceText = "Source text",
             outputText = outputText,
             generationState = GenerationState.Generating,

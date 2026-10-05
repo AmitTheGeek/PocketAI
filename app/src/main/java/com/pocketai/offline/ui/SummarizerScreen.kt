@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FabPosition
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -29,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -42,6 +44,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -122,7 +126,8 @@ internal fun ResultScreen(
 ) {
     val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
-    var followOutput by remember(state.activeSourceText) { mutableStateOf(true) }
+    var followOutput by remember(state.activeRequestId) { mutableStateOf(true) }
+    val showJumpToLatest = state.outputText.isNotBlank() && !followOutput
     val userScrollConnection = remember(scrollState) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -145,11 +150,17 @@ internal fun ResultScreen(
         }
     }
 
-    LaunchedEffect(scrollState.maxValue, followOutput, state.destination) {
-        if (state.destination == PocketAiDestination.Result && followOutput) {
-            delay(80)
-            scrollState.scrollTo(scrollState.maxValue)
-        }
+    LaunchedEffect(state.activeRequestId, followOutput, state.destination) {
+        if (state.destination != PocketAiDestination.Result || !followOutput) return@LaunchedEffect
+        snapshotFlow { scrollState.maxValue }
+            .distinctUntilChanged()
+            .conflate()
+            .collect { maxValue ->
+                if (scrollState.value != maxValue) {
+                    scrollState.scrollTo(maxValue)
+                }
+                delay(FOLLOW_SCROLL_INTERVAL_MS)
+            }
     }
 
     Scaffold(
@@ -178,6 +189,24 @@ internal fun ResultScreen(
                 onEditSource = onEditSource,
             )
         },
+        floatingActionButton = {
+            if (showJumpToLatest) {
+                Button(
+                    onClick = {
+                        followOutput = true
+                        coroutineScope.launch {
+                            scrollState.scrollTo(scrollState.maxValue)
+                        }
+                    },
+                    modifier = Modifier
+                        .testTag("jumpToLatestButton")
+                        .semantics { contentDescription = "Jump to latest summary text" },
+                ) {
+                    Text("Jump to latest")
+                }
+            }
+        },
+        floatingActionButtonPosition = FabPosition.Center,
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -214,23 +243,6 @@ internal fun ResultScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-
-            if (state.outputText.isNotBlank() && !followOutput) {
-                OutlinedButton(
-                    onClick = {
-                        followOutput = true
-                        coroutineScope.launch {
-                            scrollState.scrollTo(scrollState.maxValue)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("jumpToLatestButton")
-                        .semantics { contentDescription = "Jump to latest summary text" },
-                ) {
-                    Text("Jump to latest")
-                }
             }
         }
     }
@@ -504,3 +516,5 @@ private fun PocketAiUiState.modelStatusDetail(): String =
 
 private fun ScrollState.isNearEnd(): Boolean =
     value >= maxValue - 48
+
+private const val FOLLOW_SCROLL_INTERVAL_MS = 96L

@@ -31,8 +31,11 @@ Input and Result own separate scroll behavior.
 - Output is rendered without fixed-height clipping, `maxLines`, or ellipsis.
 - Auto-follow is enabled only while the reader is already at the bottom.
 - User scroll gestures turn auto-follow off.
+- Jump to latest lives in the Result scaffold's floating action area, outside the scrolling text, so it remains reachable while the reader is above the latest output.
 - Jump to latest restores follow mode and scrolls to the current end.
-- Refinement replaces first-attempt output while preserving the reader's follow/not-follow intent for the same source snapshot.
+- Streaming follow uses conflated content-height updates with a bounded delay after each scroll. Continuous token updates do not restart the delay forever.
+- Refinement replaces first-attempt output while preserving the reader's follow/not-follow intent for the same request.
+- A new active request id resets follow intent even when the source text matches a previous request.
 - Bottom actions are outside scrolling text, so Cancel/Copy/Save/Edit remain reachable.
 
 ## Accessibility
@@ -62,5 +65,5 @@ Compose previews cover:
 - Input draft return regression: covered by `SummaryReadingUiTest.inputDraftSurvivesOpeningResultAndReturning`, pending execution.
 - Copy-full-output regression: covered by `SummaryReadingUiTest.copyUsesCompleteOutputText`, pending execution.
 - Cancel reachability: covered by `SummaryReadingUiTest.cancelRemainsReachableAtBottomOfLongStreamingOutput`, pending execution.
-- Jump/latest and refinement scroll intent: covered by `SummaryReadingUiTest.jumpToLatestAppearsAfterManualScrollAway` and `manualScrollIntentSurvivesRefinementReplacement`, pending execution.
+- Jump/latest, continuous streaming follow, and refinement scroll intent: covered by `SummaryReadingUiTest.jumpToLatestVisibleWhileReadingEarlierContent`, `continuousSyntheticStreamingFollowsBeforeGenerationEnds`, and `manualScrollIntentSurvivesRefinementReplacement`, pending execution.
 - Manual device acceptance: pending for the split Input/Result flow, keyboard behavior, rotation, copy/save, history, real streaming, Back/cancellation, and the retained model-recovery/evaluation checklist.
