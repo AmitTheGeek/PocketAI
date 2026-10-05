@@ -5,6 +5,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.arm.aichat.InferenceEngine
 import java.io.File
 import java.io.IOException
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -82,11 +84,54 @@ class LlamaCppSummarizationEngineTest {
             engine.loadModel(badModel, "bad-cleanup.gguf")
         }.exceptionOrNull()
 
-        assertTrue(failure is IOException)
+        val thrown = failure ?: throw AssertionError("Expected model load to fail.")
+        val exceptionGraph = thrown.describeExceptionGraph()
+        assertTrue("Expected IOException, got:\n$exceptionGraph", thrown is IOException)
         assertEquals(1, upstream.cleanUpCount)
-        assertTrue(failure?.suppressed?.any { it is IOException && it.message == "cleanup failed" } == true)
+        assertTrue(
+            "Expected original load failure in:\n$exceptionGraph",
+            thrown.containsIOException("load failed")
+        )
+        assertTrue(
+            "Expected cleanup failure in:\n$exceptionGraph",
+            thrown.containsIOException("cleanup failed")
+        )
         assertNull(engine.loadedModel.value)
         assertTrue(upstream.state.value is InferenceEngine.State.Error)
+    }
+
+    private fun Throwable.containsIOException(message: String): Boolean =
+        throwableGraph().any { it is IOException && it.message == message }
+
+    private fun Throwable.describeExceptionGraph(): String =
+        throwableGraph().joinToString(separator = "\n") { throwable ->
+            val cause = throwable.cause?.let {
+                "${it::class.java.simpleName}: ${it.message}"
+            } ?: "none"
+            val suppressed = throwable.suppressed.joinToString(
+                prefix = "[",
+                postfix = "]"
+            ) {
+                "${it::class.java.simpleName}: ${it.message}"
+            }
+            "${throwable::class.java.simpleName}: ${throwable.message}; " +
+                "cause=$cause; suppressed=$suppressed"
+        }
+
+    private fun Throwable.throwableGraph(): List<Throwable> {
+        val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        val pending = ArrayDeque<Throwable>().apply { addLast(this@throwableGraph) }
+        val result = mutableListOf<Throwable>()
+
+        while (pending.isNotEmpty()) {
+            val throwable = pending.removeFirst()
+            if (!seen.add(throwable)) continue
+            result += throwable
+            throwable.cause?.let(pending::addLast)
+            throwable.suppressed.forEach(pending::addLast)
+        }
+
+        return result
     }
 
     private fun tempModelFile(label: String): File =
