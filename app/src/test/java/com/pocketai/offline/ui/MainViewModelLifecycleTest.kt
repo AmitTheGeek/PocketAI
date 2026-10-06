@@ -9,6 +9,9 @@ import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.ImportedModelFile
 import com.pocketai.offline.inference.LoadedModelInfo
 import com.pocketai.offline.inference.ModelImporter
+import com.pocketai.offline.inference.ModelSelectionRepository
+import com.pocketai.offline.inference.PersistedModelSelection
+import com.pocketai.offline.inference.RestoredModelSelection
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryAttempt
 import java.io.File
@@ -170,6 +173,138 @@ class MainViewModelLifecycleTest {
     }
 
     @Test
+    fun selectionRestoredByFreshViewModelWithoutLoadingNativeModel() {
+        val engine = RecordingEngine()
+        val modelFile = tempModelFile("remembered")
+        val selectionRepository = FakeModelSelectionRepository(
+            restoredSelection = RestoredModelSelection.Available(
+                persistedSelection(modelFile, "remembered.gguf")
+            )
+        )
+
+        val viewModel = viewModel(
+            engine = engine,
+            modelSelectionRepository = selectionRepository,
+            readyModel = false
+        )
+        idleMain()
+
+        val available = viewModel.uiState.value.modelReadiness as ModelReadiness.AvailableOnDisk
+        assertEquals("remembered.gguf", available.model.name)
+        assertEquals(modelFile.absolutePath, available.model.path)
+        assertEquals(0, engine.loadedPaths.size)
+    }
+
+    @Test
+    fun historyAccessDoesNotLoadAvailableModelFromDisk() {
+        val engine = RecordingEngine()
+        val modelFile = tempModelFile("history-only")
+        val viewModel = viewModel(
+            engine = engine,
+            modelSelectionRepository = FakeModelSelectionRepository(
+                restoredSelection = RestoredModelSelection.Available(
+                    persistedSelection(modelFile, "history-only.gguf")
+                )
+            ),
+            readyModel = false
+        )
+        idleMain()
+
+        viewModel.openHistory()
+        idleMain()
+
+        assertEquals(PocketAiDestination.History, viewModel.uiState.value.destination)
+        assertEquals(0, engine.loadedPaths.size)
+        assertEquals(0, engine.summarizeCount)
+    }
+
+    @Test
+    fun firstSummaryLoadsRememberedModelOnceAndLaterSummariesReuseIt() {
+        val engine = RecordingEngine()
+        val modelFile = tempModelFile("remembered-summary")
+        val viewModel = viewModel(
+            engine = engine,
+            modelSelectionRepository = FakeModelSelectionRepository(
+                restoredSelection = RestoredModelSelection.Available(
+                    persistedSelection(modelFile, "remembered-summary.gguf")
+                )
+            ),
+            readyModel = false
+        )
+        idleMain()
+
+        viewModel.summarize()
+        idleMain()
+        viewModel.openInput()
+        viewModel.summarize()
+        idleMain()
+
+        assertEquals(listOf(modelFile.absolutePath), engine.loadedPaths)
+        assertEquals(2, engine.summarizeCount)
+        assertEquals(GenerationState.Completed, viewModel.uiState.value.generationState)
+    }
+
+    @Test
+    fun failedReplacementPreservesPreviousSelectionAndDoesNotDeleteModels() {
+        val previousFile = tempModelFile("previous")
+        val replacementFile = tempModelFile("replacement")
+        val selectionRepository = FakeModelSelectionRepository(
+            restoredSelection = RestoredModelSelection.Available(
+                persistedSelection(previousFile, "previous.gguf")
+            ),
+            failPersist = true
+        )
+        val importer = QueueModelImporter(
+            ImportedModelFile("replacement.gguf", replacementFile)
+        )
+        val viewModel = viewModel(
+            engine = RecordingEngine(),
+            modelImporter = importer,
+            modelSelectionRepository = selectionRepository,
+            readyModel = false
+        )
+        idleMain()
+
+        viewModel.importModel(Uri.parse("content://models/replacement"))
+        idleMain()
+
+        assertTrue(viewModel.uiState.value.modelReadiness is ModelReadiness.ModelError)
+        assertEquals(previousFile.absolutePath, selectionRepository.currentSelection?.file?.absolutePath)
+        assertEquals(emptyList<String>(), importer.deletedFiles)
+        assertEquals(emptyList<String>(), importer.obsoleteCleanupRoots)
+    }
+
+    @Test
+    fun repeatedSummariesDuringRememberedModelLoadDoNotDuplicateLoads() = runBlocking {
+        val engine = BlockingLoadEngine()
+        val modelFile = tempModelFile("single-load")
+        val viewModel = viewModel(
+            engine = engine,
+            modelSelectionRepository = FakeModelSelectionRepository(
+                restoredSelection = RestoredModelSelection.Available(
+                    persistedSelection(modelFile, "single-load.gguf")
+                )
+            ),
+            readyModel = false
+        )
+        idleMain()
+
+        viewModel.summarize()
+        idleMain()
+        withTimeout(1_000L) { engine.loadStarted.await() }
+        viewModel.summarize()
+        idleMain()
+
+        assertEquals(1, engine.loadCount)
+
+        engine.allowLoad.complete(Unit)
+        idleMain()
+
+        assertEquals(1, engine.loadCount)
+        assertEquals(GenerationState.Completed, viewModel.uiState.value.generationState)
+    }
+
+    @Test
     fun importsDifferentModelsThatShareTheSameDisplayFilename() {
         val engine = RecordingEngine()
         val firstFile = tempModelFile("first")
@@ -267,16 +402,24 @@ class MainViewModelLifecycleTest {
     private fun viewModel(
         engine: SummarizationEngine = RecordingEngine(),
         modelImporter: ModelImporter = QueueModelImporter(),
+        modelSelectionRepository: ModelSelectionRepository = FakeModelSelectionRepository(),
         repository: SummaryHistoryRepository = FakeHistoryRepository(),
         readyModel: Boolean,
     ): MainViewModel {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val modelState = if (readyModel) {
+            val modelFile = tempModelFile("ready")
+            runBlocking {
+                if (engine.loadedModel.value == null) {
+                    engine.loadModel(modelFile, "qwen.gguf")
+                }
+            }
+            val loadedModel = engine.loadedModel.value
             ModelReadiness.Ready(
                 ImportedModel(
-                    name = "qwen.gguf",
-                    sizeBytes = 1_024L,
-                    path = "/models/qwen.gguf"
+                    name = loadedModel?.name ?: "qwen.gguf",
+                    sizeBytes = loadedModel?.sizeBytes ?: modelFile.length(),
+                    path = loadedModel?.path ?: modelFile.absolutePath
                 )
             )
         } else {
@@ -286,6 +429,7 @@ class MainViewModelLifecycleTest {
             application = app,
             engine = engine,
             modelImporter = modelImporter,
+            modelSelectionRepository = modelSelectionRepository,
             historyRepository = repository,
             initialState = PocketAiUiState(
                 modelReadiness = modelState,
@@ -310,6 +454,19 @@ class MainViewModelLifecycleTest {
             writeText("fake-$label")
             deleteOnExit()
         }
+
+    private fun persistedSelection(
+        file: File,
+        displayName: String?,
+        verified: Boolean = true,
+    ): PersistedModelSelection =
+        PersistedModelSelection(
+            file = file,
+            relativeFileName = file.name,
+            displayName = displayName,
+            sizeBytes = file.length(),
+            verified = verified
+        )
 
     private class RecordingEngine(
         private val failLoadPaths: Set<String> = emptySet(),
@@ -357,6 +514,37 @@ class MainViewModelLifecycleTest {
             closeCount += 1
             mutableLoadedModel.value = null
         }
+    }
+
+    private class BlockingLoadEngine : SummarizationEngine {
+        private val mutableLoadedModel = MutableStateFlow<LoadedModelInfo?>(null)
+        override val loadedModel: StateFlow<LoadedModelInfo?> = mutableLoadedModel
+        override val contextWindowTokens: Int = 2_048
+        override val maxGeneratedTokens: Int = 512
+        val loadStarted = CompletableDeferred<Unit>()
+        val allowLoad = CompletableDeferred<Unit>()
+        var loadCount = 0
+
+        override suspend fun loadModel(modelFile: File, displayName: String) {
+            loadCount += 1
+            loadStarted.complete(Unit)
+            allowLoad.await()
+            mutableLoadedModel.value = LoadedModelInfo(
+                name = displayName,
+                sizeBytes = modelFile.length(),
+                path = modelFile.absolutePath
+            )
+        }
+
+        override suspend fun countPromptTokens(paragraph: String, attempt: SummaryAttempt): Int = 100
+
+        override fun summarize(paragraph: String, attempt: SummaryAttempt): Flow<String> = flow {
+            emit("- Loaded once")
+        }
+
+        override fun cancel() = Unit
+        override suspend fun unloadModel() = Unit
+        override suspend fun close() = Unit
     }
 
     private class BlockingThenCompletingEngine : SummarizationEngine {
@@ -416,6 +604,33 @@ class MainViewModelLifecycleTest {
 
         override suspend fun deleteObsoleteModels(activeModelPath: String) {
             obsoleteCleanupRoots += activeModelPath
+        }
+    }
+
+    private class FakeModelSelectionRepository(
+        restoredSelection: RestoredModelSelection = RestoredModelSelection.None,
+        private val failPersist: Boolean = false,
+    ) : ModelSelectionRepository {
+        var currentSelection: PersistedModelSelection? =
+            (restoredSelection as? RestoredModelSelection.Available)?.selection
+        private var restoreResult: RestoredModelSelection = restoredSelection
+
+        override suspend fun restoreSelection(): RestoredModelSelection = restoreResult
+
+        override suspend fun selectionForImportedModel(
+            importedModelFile: ImportedModelFile,
+        ): PersistedModelSelection = PersistedModelSelection(
+            file = importedModelFile.file,
+            relativeFileName = importedModelFile.file.name,
+            displayName = importedModelFile.displayName,
+            sizeBytes = importedModelFile.file.length(),
+            verified = true
+        )
+
+        override suspend fun persistSelection(selection: PersistedModelSelection) {
+            if (failPersist) throw IOException("preferences unavailable")
+            currentSelection = selection
+            restoreResult = RestoredModelSelection.Available(selection)
         }
     }
 

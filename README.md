@@ -84,12 +84,13 @@ outputs/PocketAI-debug.apk
 2. Install the debug APK.
 3. Launch PocketAI.
 4. Tap Import GGUF and select the downloaded model.
-5. Wait for the import and load state to finish.
+5. Wait for the import and load state to finish. The app remembers the app-private copy after a successful import/load.
 6. Edit or keep the sample paragraph on the Input screen, then tap Summarize.
 7. Confirm the app opens the Result screen before completion and streams output there.
 8. Use Cancel to stop an in-progress generation while remaining on Result, or use Back during active work to stop and return to Input.
 9. Tap Copy, Save, or Edit source after a completed result.
 10. Open History, open the saved detail, copy the summary if needed, and delete saved records when testing deletion.
+11. After relaunch, the remembered private model should appear without opening the file picker. The first summary after process death may show `Loading model...` before Result opens.
 
 ## Airplane-Mode Test
 
@@ -100,7 +101,9 @@ outputs/PocketAI-debug.apk
 5. Summarize the sample paragraph.
 6. Confirm streamed output appears, elapsed time updates, and Cancel stops generation.
 7. Save the completed result and reopen it from History.
-8. Confirm no network prompt or login is required.
+8. Force-stop and relaunch without clearing app data.
+9. Confirm the remembered model is recognised without opening the file picker.
+10. Summarize again and confirm no network prompt or login is required.
 
 ## Local Persistence
 
@@ -117,7 +120,7 @@ Saved fields:
 - Final structural-format warning, if any.
 - Imported model filename and byte size when available.
 
-Model binaries are not stored in Room. The manifest currently sets `android:allowBackup="false"`, so this app is not opted into Android Auto Backup. Saved summaries are still local app-private data and are removed if app data is cleared or the app is uninstalled.
+Model binaries are not stored in Room. Model selection metadata uses Preferences DataStore and stores only the app-private relative filename, original display name when known, and file size. The manifest currently sets `android:allowBackup="false"`, so this app is not opted into Android Auto Backup. Saved summaries and imported model files are still local app-private data and are removed if app data is cleared or the app is uninstalled.
 
 ## Evaluation Cases
 
@@ -131,10 +134,10 @@ See `PROJECT_BRIEF.md` for scope and exclusions, and `ARCHITECTURE.md` for respo
 
 Task 004/005 baseline: `JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` and `assembleDebug` succeeded on October 5, 2026, and `outputs/PocketAI-debug.apk` was refreshed at that time.
 
-Task 006 status: the split Input/Result implementation has been updated in source, but this environment has not yet completed `testDebugUnitTest` or `assembleDebug`. The first wrapper run was blocked by sandbox denial when Gradle tried to use `~/.gradle`; the workspace-local Gradle home then lacked the wrapper distribution and could not download it because network access is blocked; running the already-installed Gradle binary directly failed when the sandbox blocked Gradle's file-lock listener socket.
+Task 007 status: remembered-model selection was added and verified with `JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` and `assembleDebug` on October 6, 2026. `outputs/PocketAI-debug.apk` was refreshed with SHA-256 `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
 
 Physical-device smoke testing was previously performed on the connected OnePlus 8 Pro / IN2021 on October 4, 2026: APK install succeeded, the app launched, the GGUF was imported into app-private storage, and real summary runs took about 4-6 seconds. Initial cancellation followed by a fresh request passed on-device. The user later confirmed baseline offline/airplane-mode inference worked on the same phone.
 
-The structural validator, one-retry coordinator, Room persistence, ViewModel save orchestration, and Task 004 lifecycle/import/navigation recovery changes passed JVM unit tests before Task 006. The Task 006 split-screen navigation, refreshed UI tests, latest lifecycle recovery, failed-load recovery, same-filename replacement, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone.
+The structural validator, one-retry coordinator, Room persistence, ViewModel save orchestration, Task 004 lifecycle/import/navigation recovery changes, Task 006 split-screen navigation fakes, and Task 007 remembered-model selection tests pass JVM unit tests. The latest remembered-model relaunch flow, connected UI tests, failed-load recovery, same-filename replacement, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone.
 
-The source manifest declares no permissions. On October 5, 2026, the merged app manifest contained AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. The latest Task 006 APK archive check is pending because `assembleDebug` has not yet completed in this environment.
+The source manifest declares no permissions. On October 6, 2026, the merged debug APK manifest contained AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. The refreshed APK archive scan found no `.gguf`, `.safetensors`, Qwen, or model binary assets.

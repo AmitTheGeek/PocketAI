@@ -154,7 +154,9 @@ Status as of October 4, 2026: the app has run offline-style local summaries on t
 - [ ] Pending: Paste oversized input and verify the app explains the token-budget issue without truncating the source.
 - [ ] Pending: Generate a summary offline, save it, open it from History, and verify the saved source and summary match the completed request.
 - [ ] Pending: Force-stop and relaunch the app, then verify the saved summary remains accessible from History.
+- [ ] Pending: Force-stop and relaunch the app, then verify the imported GGUF is recognised without opening the file picker.
 - [ ] Pending: Open History without importing or loading a model and verify saved summaries can still be browsed.
+- [ ] Pending: After relaunch, summarize successfully using the remembered app-private GGUF.
 - [ ] Pending: Delete a saved summary, force-stop and relaunch, and verify it stays deleted.
 - [ ] Pending: Save a result that shows a structural-format warning and verify the warning is retained in the saved detail.
 - [ ] Pending: Finish and reopen the Activity within the same app process, then verify importing/summarizing still works and history remains browsable.

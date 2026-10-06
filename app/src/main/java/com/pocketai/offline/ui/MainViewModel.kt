@@ -15,9 +15,13 @@ import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.ImportedModelFile
 import com.pocketai.offline.inference.LoadedModelInfo
 import com.pocketai.offline.inference.ModelImporter
+import com.pocketai.offline.inference.ModelSelectionRepository
+import com.pocketai.offline.inference.PersistedModelSelection
+import com.pocketai.offline.inference.RestoredModelSelection
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryGenerationCoordinator
 import com.pocketai.offline.summarization.SummaryGenerationEvent
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -32,11 +36,15 @@ data class ImportedModel(
     val name: String,
     val sizeBytes: Long,
     val path: String,
+    val originalDisplayName: String? = name,
+    val relativeFileName: String = File(path).name,
 )
 
 sealed interface ModelReadiness {
     data object NoModel : ModelReadiness
+    data object CheckingSavedSelection : ModelReadiness
     data object Importing : ModelReadiness
+    data class AvailableOnDisk(val model: ImportedModel, val verified: Boolean) : ModelReadiness
     data object Loading : ModelReadiness
     data class Ready(val model: ImportedModel) : ModelReadiness
     data class ModelError(val message: String) : ModelReadiness
@@ -124,12 +132,20 @@ data class PocketAiUiState(
     val detailState: DetailUiState = DetailUiState.Idle,
 ) {
     val model: ImportedModel?
-        get() = (modelReadiness as? ModelReadiness.Ready)?.model
+        get() = when (val readiness = modelReadiness) {
+            is ModelReadiness.AvailableOnDisk -> readiness.model
+            is ModelReadiness.Ready -> readiness.model
+            else -> null
+        }
 
     val modelLabel: String
         get() = when (val state = modelReadiness) {
             ModelReadiness.NoModel -> "No GGUF imported"
+            ModelReadiness.CheckingSavedSelection -> "Checking saved model"
             ModelReadiness.Importing -> "Importing GGUF"
+            is ModelReadiness.AvailableOnDisk -> {
+                "${state.model.name}  ${formatBytesForState(state.model.sizeBytes)}"
+            }
             ModelReadiness.Loading -> "Loading model"
             is ModelReadiness.Ready -> "${state.model.name}  ${formatBytesForState(state.model.sizeBytes)}"
             is ModelReadiness.ModelError -> "Model error"
@@ -137,8 +153,9 @@ data class PocketAiUiState(
 
     val loadingMessage: String?
         get() = when {
+            modelReadiness is ModelReadiness.CheckingSavedSelection -> "Checking saved model..."
             modelReadiness is ModelReadiness.Importing -> "Importing GGUF"
-            modelReadiness is ModelReadiness.Loading -> "Loading model"
+            modelReadiness is ModelReadiness.Loading -> "Loading model..."
             generationState == GenerationState.Preparing -> "Preparing summary..."
             generationState == GenerationState.Generating -> "Summarising..."
             generationState == GenerationState.Refining -> "Refining summary..."
@@ -186,7 +203,7 @@ data class PocketAiUiState(
         get() = !isBusy
 
     val canSummarize: Boolean
-        get() = modelReadiness is ModelReadiness.Ready &&
+        get() = modelReadiness.canStartSummary &&
             !isBusy
 
     val canSave: Boolean
@@ -206,6 +223,7 @@ class MainViewModel(
     application: Application,
     private val engine: SummarizationEngine,
     private val modelImporter: ModelImporter,
+    private val modelSelectionRepository: ModelSelectionRepository,
     private val historyRepository: SummaryHistoryRepository,
     private val nowEpochMs: () -> Long = { System.currentTimeMillis() },
     initialState: PocketAiUiState = PocketAiUiState(),
@@ -221,6 +239,7 @@ class MainViewModel(
 
     init {
         reflectLoadedModelReadiness()
+        restorePersistedModelSelection()
         observeHistory()
     }
 
@@ -303,6 +322,7 @@ class MainViewModel(
         importJob?.cancel()
         importJob = viewModelScope.launch {
             var importedModel: ImportedModelFile? = null
+            var modelLoaded = false
             _uiState.update {
                 it.copy(
                     modelReadiness = ModelReadiness.Importing,
@@ -313,13 +333,20 @@ class MainViewModel(
 
             try {
                 val modelFile = modelImporter.import(uri).also { importedModel = it }
+                val selection = modelSelectionRepository.selectionForImportedModel(modelFile)
                 _uiState.update { it.copy(modelReadiness = ModelReadiness.Loading) }
-                engine.loadModel(modelFile.file, modelFile.displayName)
-                val model = ImportedModel(
-                    name = modelFile.displayName,
-                    sizeBytes = modelFile.file.length(),
-                    path = modelFile.file.absolutePath
-                )
+                engine.loadModel(selection.file, selection.label)
+                modelLoaded = true
+                try {
+                    modelSelectionRepository.persistSelection(selection)
+                } catch (throwable: Throwable) {
+                    if (throwable is CancellationException) throw throwable
+                    throw IllegalStateException(
+                        "Unable to remember imported model selection.",
+                        throwable
+                    )
+                }
+                val model = selection.toImportedModel()
                 modelImporter.deleteObsoleteModels(model.path)
                 _uiState.update {
                     it.copy(
@@ -334,10 +361,14 @@ class MainViewModel(
                     )
                 }
             } catch (throwable: CancellationException) {
-                importedModel?.let { runCatching { modelImporter.deleteImportedFile(it.file) } }
+                if (!modelLoaded) {
+                    importedModel?.let { runCatching { modelImporter.deleteImportedFile(it.file) } }
+                }
                 throw throwable
             } catch (throwable: Throwable) {
-                importedModel?.let { runCatching { modelImporter.deleteImportedFile(it.file) } }
+                if (!modelLoaded) {
+                    importedModel?.let { runCatching { modelImporter.deleteImportedFile(it.file) } }
+                }
                 _uiState.update {
                     it.copy(
                         modelReadiness = ModelReadiness.ModelError(
@@ -352,7 +383,7 @@ class MainViewModel(
     fun summarize() {
         val current = _uiState.value
         if (current.isBusy) return
-        if (current.modelReadiness !is ModelReadiness.Ready) {
+        if (!current.modelReadiness.canStartSummary) {
             _uiState.update {
                 it.copy(
                     destination = PocketAiDestination.Input,
@@ -363,8 +394,8 @@ class MainViewModel(
         }
 
         val requestId = ++activeSummaryRequestId
-        val model = current.model
         val sourceSnapshot = current.inputText
+        val modelReadiness = current.modelReadiness
         _uiState.update {
             it.copy(
                 destination = PocketAiDestination.Input,
@@ -394,6 +425,10 @@ class MainViewModel(
             }
 
             try {
+                val model = ensureModelReadyForSummary(
+                    requestId = requestId,
+                    modelReadiness = modelReadiness
+                )
                 val preparedRequest = summaryCoordinator.prepare(sourceSnapshot)
                 updateIfCurrent(requestId) {
                     it.copy(
@@ -449,14 +484,19 @@ class MainViewModel(
                             durationMs = finalElapsed,
                             refinementOccurred = refinementOccurred,
                             formatWarning = it.formatWarning,
-                            modelName = model?.name,
-                            modelSizeBytes = model?.sizeBytes
+                            modelName = model.name,
+                            modelSizeBytes = model.sizeBytes
                         )
                     )
                 }
             } catch (_: CancellationException) {
                 updateIfCurrent(requestId) {
                     it.copy(
+                        modelReadiness = if (it.modelReadiness is ModelReadiness.Loading) {
+                            modelReadiness
+                        } else {
+                            it.modelReadiness
+                        },
                         generationState = GenerationState.Cancelled,
                         elapsedMs = SystemClock.elapsedRealtime() - startedAt,
                         completedSummary = null,
@@ -595,6 +635,56 @@ class MainViewModel(
         }
     }
 
+    private fun restorePersistedModelSelection() {
+        if (_uiState.value.modelReadiness !is ModelReadiness.NoModel) return
+
+        viewModelScope.launch {
+            _uiState.update { current ->
+                if (current.modelReadiness is ModelReadiness.NoModel) {
+                    current.copy(modelReadiness = ModelReadiness.CheckingSavedSelection)
+                } else {
+                    current
+                }
+            }
+
+            val restored = runCatching {
+                modelSelectionRepository.restoreSelection()
+            }.getOrElse { throwable ->
+                RestoredModelSelection.Unavailable(
+                    throwable.userMessage("Unable to check saved model")
+                )
+            }
+
+            _uiState.update { current ->
+                if (current.modelReadiness !is ModelReadiness.CheckingSavedSelection) {
+                    return@update current
+                }
+
+                val alreadyLoaded = engine.loadedModel.value
+                if (alreadyLoaded != null) {
+                    return@update current.copy(
+                        modelReadiness = ModelReadiness.Ready(alreadyLoaded.toImportedModel())
+                    )
+                }
+
+                when (restored) {
+                    RestoredModelSelection.None -> current.copy(
+                        modelReadiness = ModelReadiness.NoModel
+                    )
+                    is RestoredModelSelection.Available -> current.copy(
+                        modelReadiness = ModelReadiness.AvailableOnDisk(
+                            model = restored.selection.toImportedModel(),
+                            verified = restored.selection.verified
+                        )
+                    )
+                    is RestoredModelSelection.Unavailable -> current.copy(
+                        modelReadiness = ModelReadiness.ModelError(restored.message)
+                    )
+                }
+            }
+        }
+    }
+
     private fun reflectLoadedModelReadiness() {
         val loadedModel = engine.loadedModel.value ?: return
         _uiState.update { current ->
@@ -604,6 +694,104 @@ class MainViewModel(
                 current
             }
         }
+    }
+
+    private suspend fun ensureModelReadyForSummary(
+        requestId: Long,
+        modelReadiness: ModelReadiness,
+    ): ImportedModel {
+        return when (modelReadiness) {
+            is ModelReadiness.Ready -> {
+                val loadedModel = engine.loadedModel.value
+                if (loadedModel?.path == modelReadiness.model.path) {
+                    modelReadiness.model
+                } else {
+                    loadSelectedModelForSummary(
+                        requestId = requestId,
+                        selectedModel = modelReadiness.model,
+                        verified = true
+                    )
+                }
+            }
+            is ModelReadiness.AvailableOnDisk -> {
+                val loadedModel = engine.loadedModel.value
+                if (loadedModel?.path == modelReadiness.model.path) {
+                    val model = loadedModel.toImportedModel()
+                    updateIfCurrent(requestId) {
+                        it.copy(modelReadiness = ModelReadiness.Ready(model))
+                    }
+                    model
+                } else {
+                    loadSelectedModelForSummary(
+                        requestId = requestId,
+                        selectedModel = modelReadiness.model,
+                        verified = modelReadiness.verified
+                    )
+                }
+            }
+            else -> error("Import a GGUF model first.")
+        }
+    }
+
+    private suspend fun loadSelectedModelForSummary(
+        requestId: Long,
+        selectedModel: ImportedModel,
+        verified: Boolean,
+    ): ImportedModel {
+        val modelFile = File(selectedModel.path)
+        if (!modelFile.isFile || !modelFile.canRead()) {
+            failModelLoad(
+                requestId = requestId,
+                message = "Remembered model file is missing. Import the GGUF again."
+            )
+        }
+        if (modelFile.length() != selectedModel.sizeBytes) {
+            failModelLoad(
+                requestId = requestId,
+                message = "Remembered model file changed size. Import the GGUF again."
+            )
+        }
+
+        updateIfCurrent(requestId) {
+            it.copy(modelReadiness = ModelReadiness.Loading)
+        }
+
+        try {
+            engine.loadModel(modelFile, selectedModel.name)
+        } catch (throwable: Throwable) {
+            if (throwable is CancellationException) throw throwable
+            val message = throwable.userMessage("Model load failed")
+            updateIfCurrent(requestId) {
+                it.copy(modelReadiness = ModelReadiness.ModelError(message))
+            }
+            throw throwable
+        }
+        val loadedModel = selectedModel.copy(sizeBytes = modelFile.length())
+
+        if (!verified) {
+            try {
+                modelSelectionRepository.persistSelection(loadedModel.toPersistedModelSelection())
+            } catch (throwable: Throwable) {
+                if (throwable is CancellationException) throw throwable
+                val message = throwable.userMessage("Unable to remember recovered model")
+                updateIfCurrent(requestId) {
+                    it.copy(modelReadiness = ModelReadiness.ModelError(message))
+                }
+                throw throwable
+            }
+        }
+
+        updateIfCurrent(requestId) {
+            it.copy(modelReadiness = ModelReadiness.Ready(loadedModel))
+        }
+        return loadedModel
+    }
+
+    private fun failModelLoad(requestId: Long, message: String): Nothing {
+        updateIfCurrent(requestId) {
+            it.copy(modelReadiness = ModelReadiness.ModelError(message))
+        }
+        error(message)
     }
 
     private fun requestSummaryStop(returnToInput: Boolean) {
@@ -682,6 +870,7 @@ class MainViewModel(
                         application = application,
                         engine = container.summarizationEngine,
                         modelImporter = container.modelImporter,
+                        modelSelectionRepository = container.modelSelectionRepository,
                         historyRepository = container.historyRepository
                     ) as T
                 }
@@ -690,7 +879,12 @@ class MainViewModel(
 }
 
 private val ModelReadiness.isChanging: Boolean
-    get() = this is ModelReadiness.Importing || this is ModelReadiness.Loading
+    get() = this is ModelReadiness.CheckingSavedSelection ||
+        this is ModelReadiness.Importing ||
+        this is ModelReadiness.Loading
+
+private val ModelReadiness.canStartSummary: Boolean
+    get() = this is ModelReadiness.AvailableOnDisk || this is ModelReadiness.Ready
 
 private val GenerationState.isActive: Boolean
     get() = this == GenerationState.Preparing ||
@@ -703,6 +897,24 @@ private fun LoadedModelInfo.toImportedModel(): ImportedModel =
         name = name,
         sizeBytes = sizeBytes,
         path = path
+    )
+
+private fun PersistedModelSelection.toImportedModel(): ImportedModel =
+    ImportedModel(
+        name = label,
+        sizeBytes = sizeBytes,
+        path = file.absolutePath,
+        originalDisplayName = displayName,
+        relativeFileName = relativeFileName
+    )
+
+private fun ImportedModel.toPersistedModelSelection(): PersistedModelSelection =
+    PersistedModelSelection(
+        file = File(path),
+        relativeFileName = relativeFileName,
+        displayName = originalDisplayName,
+        sizeBytes = sizeBytes,
+        verified = true
     )
 
 private fun formatBytesForState(bytes: Long): String {

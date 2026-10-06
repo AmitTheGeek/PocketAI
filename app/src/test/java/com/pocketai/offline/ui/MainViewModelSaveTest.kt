@@ -8,6 +8,9 @@ import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.ImportedModelFile
 import com.pocketai.offline.inference.LoadedModelInfo
 import com.pocketai.offline.inference.ModelImporter
+import com.pocketai.offline.inference.ModelSelectionRepository
+import com.pocketai.offline.inference.PersistedModelSelection
+import com.pocketai.offline.inference.RestoredModelSelection
 import com.pocketai.offline.inference.SummarizationEngine
 import com.pocketai.offline.summarization.SummaryAttempt
 import java.io.File
@@ -147,18 +150,23 @@ class MainViewModelSaveTest {
         repository: FakeHistoryRepository = FakeHistoryRepository(),
     ): MainViewModel {
         val app = ApplicationProvider.getApplicationContext<Application>()
+        val modelFile = File.createTempFile("pocketai-save-ready-", ".gguf").apply {
+            writeText("fake model")
+            deleteOnExit()
+        }
         return MainViewModel(
             application = app,
             engine = engine,
             modelImporter = FakeModelImporter(),
+            modelSelectionRepository = FakeModelSelectionRepository(),
             historyRepository = repository,
             nowEpochMs = { 42_000L },
             initialState = PocketAiUiState(
                 modelReadiness = ModelReadiness.Ready(
                     ImportedModel(
                         name = "qwen.gguf",
-                        sizeBytes = 1_234L,
-                        path = "/private/qwen.gguf"
+                        sizeBytes = modelFile.length(),
+                        path = modelFile.absolutePath
                     )
                 ),
                 historyState = HistoryUiState.Loaded(emptyList())
@@ -233,6 +241,23 @@ class MainViewModelSaveTest {
         override suspend fun deleteImportedFile(file: File) = Unit
 
         override suspend fun deleteObsoleteModels(activeModelPath: String) = Unit
+    }
+
+    private class FakeModelSelectionRepository : ModelSelectionRepository {
+        override suspend fun restoreSelection(): RestoredModelSelection =
+            RestoredModelSelection.None
+
+        override suspend fun selectionForImportedModel(
+            importedModelFile: ImportedModelFile,
+        ): PersistedModelSelection = PersistedModelSelection(
+            file = importedModelFile.file,
+            relativeFileName = importedModelFile.file.name,
+            displayName = importedModelFile.displayName,
+            sizeBytes = importedModelFile.file.length(),
+            verified = true
+        )
+
+        override suspend fun persistSelection(selection: PersistedModelSelection) = Unit
     }
 
     private class FakeHistoryRepository : SummaryHistoryRepository {

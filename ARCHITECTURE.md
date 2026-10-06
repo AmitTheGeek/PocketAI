@@ -4,7 +4,7 @@
 
 - `ui`: Compose rendering and `MainViewModel` screen state/user actions.
 - `summarization`: prompt-flow policy, structural validation, retry limit, and input-budget errors.
-- `inference`: app-private model import, local llama.cpp model execution, prompt construction, token counting, native cancellation, model unload, and app-owned runtime shutdown.
+- `inference`: app-private model import, durable app-private model selection, local llama.cpp model execution, prompt construction, token counting, native cancellation, model unload, and app-owned runtime shutdown.
 - `history`: Room entity/DAO/database, saved-summary domain models, and the repository between ViewModels and Room.
 - `PocketAiContainer`: simple application container for constructor injection of the engine and history repository.
 - `work/llama.cpp/examples/llama.android/lib`: generated local checkout of the pinned official llama.cpp Android example with PocketAI-specific native hooks from `patches/llama-cpp-pocketai.patch`.
@@ -30,14 +30,15 @@ Task 004 rechecked patch application against the local pinned llama.cpp checkout
 1. Compose forwards import, text-change, summarise, cancel, save, history, detail, copy, edit-source, and delete actions to `MainViewModel`.
 2. `MainViewModel` owns immutable `PocketAiUiState` through `StateFlow`.
 3. On Summarise, `MainViewModel` captures an immutable source snapshot and enters `Preparing`.
-4. `SummaryGenerationCoordinator.prepare(...)` checks blank input and the actual formatted prompt token budget before Result navigation.
-5. If preparation fails, the app remains on Input and shows the error without starting inference.
-6. If preparation succeeds, the ViewModel navigates once to Result and starts streaming; no composable starts generation from recomposition.
-7. The coordinator streams the initial attempt through `SummarizationEngine`.
-8. `SummaryFormatValidator` checks only structure: 1-3 non-empty bullet items and no extra prose.
-9. If the first attempt is invalid, the coordinator emits `Refining`, clears first output in the UI, and retries once from the original source text.
-10. If the retry is still invalid, the retry output is retained and a warning is shown. The warning explicitly avoids claiming factual validation.
-11. On completion, the ViewModel captures the prepared source snapshot, final summary, elapsed time, refinement flag, warning, and available model identification for optional saving.
+4. If a model is selected on disk but not loaded, `MainViewModel` loads it off the main thread and shows `Loading model...`.
+5. `SummaryGenerationCoordinator.prepare(...)` checks blank input and the actual formatted prompt token budget before Result navigation.
+6. If preparation fails, the app remains on Input and shows the error without starting generation.
+7. If preparation succeeds, the ViewModel navigates once to Result and starts streaming; no composable starts generation from recomposition.
+8. The coordinator streams the initial attempt through `SummarizationEngine`.
+9. `SummaryFormatValidator` checks only structure: 1-3 non-empty bullet items and no extra prose.
+10. If the first attempt is invalid, the coordinator emits `Refining`, clears first output in the UI, and retries once from the original source text.
+11. If the retry is still invalid, the retry output is retained and a warning is shown. The warning explicitly avoids claiming factual validation.
+12. On completion, the ViewModel captures the prepared source snapshot, final summary, elapsed time, refinement flag, warning, and available model identification for optional saving.
 
 ## History Data Flow
 
@@ -56,7 +57,9 @@ Model readiness is separate from generation state.
 Model readiness:
 
 - `NoModel`
+- `CheckingSavedSelection`
 - `Importing`
+- `AvailableOnDisk`
 - `Loading`
 - `Ready`
 - `ModelError`
@@ -74,7 +77,21 @@ Generation state:
 
 Additional UI state tracks destination (`Input`, `Result`, `History`, `Detail`), the active source snapshot, history loading/error/loaded state, detail loading/error/not-found/loaded state, completed-result snapshot, and save state (`Idle`, `Saving`, `Saved`, `Error`).
 
-Import and summary actions are disabled while a model import/load or generation/preparation/refinement/stop is active. This prevents replacing the model during inference and keeps a new request from starting until cancellation cleanup has actually completed. Save is explicit and separate; duplicate save taps for the same displayed result are ignored.
+`AvailableOnDisk` means a private GGUF selection was restored and validated but is not loaded into native memory yet. It is enough to enable Summarise; the first summary loads the file just in time. `Ready` means the app-owned runtime currently reports a loaded model. Import and summary actions are disabled while a model import/load or generation/preparation/refinement/stop is active. This prevents replacing the model during inference and keeps a new request from starting until cancellation cleanup has actually completed. Save is explicit and separate; duplicate save taps for the same displayed result are ignored.
+
+## Durable Model Selection
+
+The selected model's durable identity is stored in Preferences DataStore, not Room. Stored fields are:
+
+- App-private relative filename.
+- Original picker display name when known.
+- File size in bytes.
+
+The app never stores a `Ready` boolean because readiness belongs to the in-memory native runtime. It never stores the original file-picker URI after the app-private copy succeeds, and it never stores model bytes in DataStore or Room.
+
+On startup, `ModelSelectionRepository` asynchronously checks DataStore and validates that the stored relative filename resolves inside the app-private `models` directory, is readable, and still has the expected byte size. This restore path does not load llama.cpp. If no metadata exists, the repository inspects the private model directory for legacy installs. Exactly one plausible `.gguf` is recovered as an unverified selection with no invented original display name; multiple candidates produce a clear re-import/change-model state instead of guessing.
+
+New imports are copied to a unique app-private filename. The app loads the new file successfully before committing the new DataStore selection. The previous selection remains durable until that commit succeeds. Obsolete private model files are deleted only after successful replacement, and the active file is excluded from deletion.
 
 ## Room Schema
 
@@ -114,7 +131,7 @@ Runtime operations are intentionally separate:
 
 `LlamaCppSummarizationEngine` serializes load, token-count, generation, unload, and close operations with one mutex. Loading a different model first unloads the previous native model under that lock. A failed load resets the upstream `Error` state through `cleanUp()` before a later load is allowed. PocketAI also patches the pinned upstream Android example so native `unload()` is safe after partial load failures.
 
-The model file is imported into app-private storage with a unique internal filename. The original display filename is retained for UI and saved-summary metadata. This lets two selected files share the same display name while still forcing the newly selected file to become the active model. Failed imports delete their newly copied file, and successful imports delete obsolete app-private model copies only after the new model has loaded. The active model file is not deleted while native inference may still be using it.
+The model file is imported into app-private storage with a unique internal filename. The original display filename is retained for UI, saved-summary metadata, and durable selection metadata when known. This lets two selected files share the same display name while still forcing the newly selected file to become the active model. Failed imports delete their newly copied file before native load. If persistence fails after a successful native load, PocketAI reports the failure and does not delete the newly loaded file or the previous valid private model file. Successful imports delete obsolete app-private model copies only after the new selection has loaded and committed. The active model file is not deleted while native inference may still be using it.
 
 ## Prompt Budget
 

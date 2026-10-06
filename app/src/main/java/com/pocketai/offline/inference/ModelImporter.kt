@@ -36,7 +36,7 @@ class AppPrivateModelImporter(
         val displayName = appContext.contentResolver.displayName(uri)
             ?: "model-${System.currentTimeMillis()}.gguf"
         val safeDisplayName = displayName.toSafeModelFileName()
-        val modelsDir = File(appContext.filesDir, MODELS_DIR).also { it.mkdirs() }
+        val modelsDir = File(appContext.filesDir, PRIVATE_MODELS_DIR).also { it.mkdirs() }
         val destination = File(modelsDir, "${UUID.randomUUID()}-$safeDisplayName")
         val temp = File.createTempFile("import-", ".gguf.tmp", modelsDir)
 
@@ -94,6 +94,5 @@ class AppPrivateModelImporter(
     }
 
     private companion object {
-        private const val MODELS_DIR = "models"
     }
 }

@@ -78,6 +78,39 @@ Pending on the connected OnePlus 8 Pro:
 - Refinement path, including cancellation during refinement followed by a fresh request.
 - Five rubric evaluation cases in `docs/evaluation-cases.md`.
 
+## Task 007 Checks
+
+Source changes:
+
+- Added Preferences DataStore-backed model selection metadata for the app-private GGUF filename, original display name when known, and file size.
+- Added startup restore that validates the remembered file without loading llama.cpp.
+- Added `AvailableOnDisk` readiness so Summarise can load the remembered file just in time.
+- Kept History browsing independent of model loading.
+- Preserved safe replacement ordering: import/copy, load, persist selection, then delete obsolete files.
+- Added legacy recovery for existing app-private installs with exactly one plausible `.gguf`; multiple candidates are not guessed.
+
+Automated checks on October 6, 2026:
+
+- `git diff --check`: passed.
+- `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew testDebugUnitTest`: passed.
+- `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew assembleDebug`: passed.
+- `outputs/PocketAI-debug.apk`: refreshed.
+- APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
+- APK model-asset scan: no `.gguf`, `.safetensors`, Qwen, or model binary assets found.
+- Source permission scan: no `INTERNET` or `uses-permission` declarations found under `app/src/main`.
+- Built APK permissions: only `com.pocketai.offline.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`; no `android.permission.INTERNET`.
+- `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew connectedDebugAndroidTest`: failed in `:llama-android-lib:connectedDebugAndroidTest` before app tests. The library test APK crashed because `androidx.test.runner.AndroidJUnitRunner` was not found in `com.arm.aichat.test`.
+- `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew :app:connectedDebugAndroidTest`: started 7 tests on the OnePlus IN2021 / Android 13. Multiple `SummaryReadingUiTest` cases failed with `No compose hierarchies found in the app`; the run then stopped making progress and was interrupted. Treat connected UI test validation as failed/pending, not accepted.
+
+Task 007 pending device acceptance:
+
+- [ ] Import/select once and summarise.
+- [ ] Force-stop and relaunch without clearing app data.
+- [ ] Confirm the model is recognised without opening the file picker.
+- [ ] Open History without loading the model.
+- [ ] Summarise successfully using the remembered file.
+- [ ] Repeat after device restart if available.
+
 ## Known Limitations
 
 - The UI tests use synthetic Compose state and fakes. They do not validate native llama.cpp behavior or model quality.

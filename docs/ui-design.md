@@ -59,11 +59,11 @@ Compose previews cover:
 
 ## Regression Checklist
 
-- JVM unit tests: attempted on October 5, 2026. The sandbox blocked Gradle access to `~/.gradle`, and the workspace-local Gradle home lacked the wrapper distribution. A direct Gradle binary then failed because the sandbox blocked Gradle's file-lock listener socket. Tests still need to be rerun outside that sandbox blocker.
-- Connected Compose UI tests: not run in this pass.
-- Long-output Compose regression: covered by `SummaryReadingUiTest.longSummaryFinalMarkerCanBeScrolledIntoView`, pending execution.
-- Input draft return regression: covered by `SummaryReadingUiTest.inputDraftSurvivesOpeningResultAndReturning`, pending execution.
-- Copy-full-output regression: covered by `SummaryReadingUiTest.copyUsesCompleteOutputText`, pending execution.
-- Cancel reachability: covered by `SummaryReadingUiTest.cancelRemainsReachableAtBottomOfLongStreamingOutput`, pending execution.
-- Jump/latest, continuous streaming follow, and refinement scroll intent: covered by `SummaryReadingUiTest.jumpToLatestVisibleWhileReadingEarlierContent`, `continuousSyntheticStreamingFollowsBeforeGenerationEnds`, and `manualScrollIntentSurvivesRefinementReplacement`, pending execution.
-- Manual device acceptance: pending for the split Input/Result flow, keyboard behavior, rotation, copy/save, history, real streaming, Back/cancellation, and the retained model-recovery/evaluation checklist.
+- JVM unit tests: passed on October 6, 2026 with `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew testDebugUnitTest`.
+- Connected Compose UI tests: attempted on the OnePlus IN2021 / Android 13 with `:app:connectedDebugAndroidTest`. Several `SummaryReadingUiTest` cases failed with `No compose hierarchies found in the app`, and the run was interrupted after it stopped making progress. These UI regressions remain pending/failing until the test harness launch issue is fixed.
+- Long-output Compose regression: covered by `SummaryReadingUiTest.longSummaryFinalMarkerCanBeScrolledIntoView`, currently failing in connected execution because no Compose hierarchy was found.
+- Input draft return regression: covered by `SummaryReadingUiTest.inputDraftSurvivesOpeningResultAndReturning`, currently failing in connected execution because no Compose hierarchy was found.
+- Copy-full-output regression: covered by `SummaryReadingUiTest.copyUsesCompleteOutputText`, currently failing in connected execution because no Compose hierarchy was found.
+- Cancel reachability: covered by `SummaryReadingUiTest.cancelRemainsReachableAtBottomOfLongStreamingOutput`, connected result incomplete because the run was interrupted.
+- Jump/latest, continuous streaming follow, and refinement scroll intent: covered by `SummaryReadingUiTest.jumpToLatestVisibleWhileReadingEarlierContent`, `continuousSyntheticStreamingFollowsBeforeGenerationEnds`, and `manualScrollIntentSurvivesRefinementReplacement`; connected result is failing/incomplete until the test harness issue is resolved.
+- Manual device acceptance: pending for the remembered-model relaunch flow, split Input/Result flow, keyboard behavior, rotation, copy/save, history, real streaming, Back/cancellation, and the retained model-recovery/evaluation checklist.

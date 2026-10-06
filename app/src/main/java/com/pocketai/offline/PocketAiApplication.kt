@@ -7,8 +7,10 @@ import com.pocketai.offline.history.PocketAiDatabase
 import com.pocketai.offline.history.RoomSummaryHistoryRepository
 import com.pocketai.offline.history.SummaryHistoryRepository
 import com.pocketai.offline.inference.AppPrivateModelImporter
+import com.pocketai.offline.inference.DataStoreModelSelectionRepository
 import com.pocketai.offline.inference.LlamaCppSummarizationEngine
 import com.pocketai.offline.inference.ModelImporter
+import com.pocketai.offline.inference.ModelSelectionRepository
 import com.pocketai.offline.inference.SummarizationEngine
 
 class PocketAiApplication : Application() {
@@ -39,6 +41,10 @@ class PocketAiContainer(
 
     val modelImporter: ModelImporter by lazy {
         AppPrivateModelImporter(appContext)
+    }
+
+    val modelSelectionRepository: ModelSelectionRepository by lazy {
+        DataStoreModelSelectionRepository(appContext)
     }
 
     val summarizationEngine: SummarizationEngine

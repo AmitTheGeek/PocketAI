@@ -499,7 +499,9 @@ private fun ResultFeedback(state: PocketAiUiState) {
 private fun PocketAiUiState.modelStatusTitle(): String =
     when (modelReadiness) {
         ModelReadiness.NoModel -> "No model selected"
+        ModelReadiness.CheckingSavedSelection -> "Checking saved model"
         ModelReadiness.Importing -> "Importing model"
+        is ModelReadiness.AvailableOnDisk -> "Model selected"
         ModelReadiness.Loading -> "Preparing model"
         is ModelReadiness.Ready -> "Model ready"
         is ModelReadiness.ModelError -> "Model needs attention"
@@ -508,8 +510,11 @@ private fun PocketAiUiState.modelStatusTitle(): String =
 private fun PocketAiUiState.modelStatusDetail(): String =
     when (val readiness = modelReadiness) {
         ModelReadiness.NoModel -> "Import a local model before summarising."
+        ModelReadiness.CheckingSavedSelection -> "Checking the saved private model reference."
         ModelReadiness.Importing -> "Copying the selected file into private app storage."
-        ModelReadiness.Loading -> "Preparing local summarisation."
+        is ModelReadiness.AvailableOnDisk ->
+            "${readiness.model.name}  ${formatBytesForUi(readiness.model.sizeBytes)}"
+        ModelReadiness.Loading -> "Loading model for local summarisation."
         is ModelReadiness.Ready -> "${readiness.model.name}  ${formatBytesForUi(readiness.model.sizeBytes)}"
         is ModelReadiness.ModelError -> readiness.message
     }
