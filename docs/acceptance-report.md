@@ -2,11 +2,24 @@
 
 Date: October 6, 2026
 
+## Current Verification Status
+
+- Latest remembered-model implementation commit with reported unit/build verification: `02df858` (`Remember imported model selection`).
+- Verified debug APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`. The captured APK evidence did not record an embedded source revision, so this checksum remains the build identity.
+- `testDebugUnitTest` and `assembleDebug` passed for the Task 007 remembered-model implementation on October 6, 2026. No rebuild was run for later documentation-only commits.
+- App-only connected UI suite passed on the OnePlus IN2021 / Android 13 after the device was awake and unlocked: `:app:connectedDebugAndroidTest`, 7 tests, 0 failures.
+- Task 007C device restoration checks passed: model recognised after force-stop, no re-import required, History opened without native inference logs, and first post-relaunch inference completed using the remembered app-private GGUF.
+- Observed Task 007C elapsed times: 7.1s baseline before force-stop, 9.9s first post-relaunch summary. These are individual observations, not a benchmark.
+- Still unverified: second post-relaunch request reusing the already-loaded model, device-restart persistence, refinement cancellation on device, failed-load recovery with a real invalid GGUF, same-filename replacement on device, and the full five-case model-quality checklist.
+- Historical sandbox/runner failures below are retained for traceability. For current app UI verification, use `:app:connectedDebugAndroidTest`; the aggregate `connectedDebugAndroidTest` command is superseded for PocketAI app validation because it also runs the vendored llama library's broken test APK.
+
 ## Task 006 Scope
 
 Task 006 replaces the combined summariser with separate Compose Input and Result destinations. It preserves local llama.cpp inference, bounded retry, cancellation, Room history, and app-owned runtime behavior.
 
-## Automated Checks
+## Historical Task 006 Automated Checks
+
+These sandbox-limited checks are retained as history. They were superseded by the later Task 007 unit/build result and Task 007B app-only connected UI test pass recorded above.
 
 - Source scan for removed Task 005 combined-screen and expanded-editor symbols: passed locally.
 - `testDebugUnitTest`: attempted, not completed. The wrapper was blocked from `~/.gradle` by sandbox permissions. The workspace-local Gradle home lacked the Gradle 8.14.3 distribution and could not download it because network is blocked. Running the already-installed Gradle binary directly also failed because the sandbox blocked Gradle's file-lock listener socket.
@@ -15,7 +28,7 @@ Task 006 replaces the combined summariser with separate Compose Input and Result
 - APK refresh: pending; `outputs/PocketAI-debug.apk` still reflects the previous successful baseline unless a later build is run outside the blocker.
 - `INTERNET` permission and packaged-model APK checks: pending for the Task 006 APK because no refreshed APK was produced.
 
-## Task 006B Checks
+## Historical Task 006B Checks
 
 Source changes:
 
@@ -53,8 +66,10 @@ shasum -a 256 outputs/PocketAI-debug.apk
 If a device is connected and authorized:
 
 ```sh
-JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew connectedDebugAndroidTest
+JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew :app:connectedDebugAndroidTest
 ```
+
+The earlier aggregate `connectedDebugAndroidTest` command is not the current app verification command because it also enters `:llama-android-lib:connectedDebugAndroidTest`.
 
 ## Device Checks
 
@@ -91,16 +106,18 @@ Source changes:
 
 Automated checks on October 6, 2026:
 
+- Implementation source commit reported for this Task 007 verification: `02df858`.
 - `git diff --check`: passed.
 - `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew testDebugUnitTest`: passed.
 - `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew assembleDebug`: passed.
 - `outputs/PocketAI-debug.apk`: refreshed.
 - APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
+- Exact source revision embedded in the APK was not captured; use the checksum above as the build artifact identity.
 - APK model-asset scan: no `.gguf`, `.safetensors`, Qwen, or model binary assets found.
 - Source permission scan: no `INTERNET` or `uses-permission` declarations found under `app/src/main`.
 - Built APK permissions: only `com.pocketai.offline.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`; no `android.permission.INTERNET`.
-- `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew connectedDebugAndroidTest`: failed in `:llama-android-lib:connectedDebugAndroidTest` before app tests. The library test APK crashed because `androidx.test.runner.AndroidJUnitRunner` was not found in `com.arm.aichat.test`.
-- `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew :app:connectedDebugAndroidTest`: started 7 tests on the OnePlus IN2021 / Android 13. Multiple `SummaryReadingUiTest` cases failed with `No compose hierarchies found in the app`; the run then stopped making progress and was interrupted. Treat connected UI test validation as failed/pending, not accepted.
+- Historical aggregate command, superseded for app validation: `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew connectedDebugAndroidTest` failed in `:llama-android-lib:connectedDebugAndroidTest` before app tests. The library test APK crashed because `androidx.test.runner.AndroidJUnitRunner` was not found in `com.arm.aichat.test`.
+- Historical first app-only connected attempt before the device-unlock diagnosis: `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew :app:connectedDebugAndroidTest` started 7 tests on the OnePlus IN2021 / Android 13, then multiple `SummaryReadingUiTest` cases failed with `No compose hierarchies found in the app`. This was later traced to the phone being asleep/locked and superseded by the passing Task 007B app-only suite below.
 
 Task 007 pending device acceptance at the time of the Task 007 build. The later Task 007C section records the follow-up device results for model restoration.
 
@@ -167,8 +184,10 @@ Date: October 6, 2026
 
 Source and APK:
 
-- Source commit for latest code under test: `3311f58`.
-- Documentation commit at the time of the follow-up device run: `8881766`.
+- Implementation code under test: `02df858` (`Remember imported model selection`).
+- Connected-test diagnosis documentation commit: `3311f58`.
+- Documentation commit at the time of the follow-up Task 007C device run: `8881766`.
+- Exact source revision embedded in the APK was not recorded in the captured evidence; the APK checksum below is the verified build identity.
 - Application ID resolved from Gradle: `com.pocketai.offline`.
 - Version: `0.1.0`, versionCode `1`.
 - Local APK: `outputs/PocketAI-debug.apk`.
@@ -223,4 +242,4 @@ Follow-up run after user re-imported the model:
 - The UI tests use synthetic Compose state and fakes. They do not validate native llama.cpp behavior or model quality.
 - Structural validation checks only bullet format. It does not validate factual accuracy.
 - Process-death restoration for an active generation is not implemented or claimed.
-- Task 006 build/device acceptance remains pending until Gradle can run outside the current sandbox blocker.
+- Device-restart persistence, second post-relaunch loaded-model reuse, refinement cancellation on device, failed-load recovery with a real invalid GGUF, same-filename replacement on device, and the full five-case model-quality checklist remain pending.

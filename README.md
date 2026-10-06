@@ -148,8 +148,9 @@ Do not use aggregate `connectedDebugAndroidTest` as the PocketAI app signal. It 
 
 Recorded verification:
 
-- Task 007 code build, source commit `3311f58`, on October 6, 2026: `testDebugUnitTest` passed and `assembleDebug` passed.
+- Task 007 remembered-model implementation commit `02df858`, on October 6, 2026: `testDebugUnitTest` passed and `assembleDebug` passed.
 - Task 007 debug APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
+- The captured APK evidence did not record an embedded source revision, so the checksum above is the verified build identity. Later commits such as `3311f58` documented connected-test diagnosis and did not represent a rebuild.
 - APK scan on October 6, 2026 found no `.gguf`, `.safetensors`, Qwen, or model binary assets.
 - Source and built APK permission checks found no `android.permission.INTERNET`; the debug APK contained only AndroidX's generated app-private dynamic receiver permission.
 - App-only connected Compose suite on OnePlus IN2021 / Android 13: 7 tests passed after the device was awake and unlocked.
