@@ -161,6 +161,49 @@ Task 007 manual model-restoration checks remain pending:
 - [ ] Summarise successfully using the remembered file.
 - [ ] Repeat after device restart if available.
 
+## Task 007C Model Persistence Device Acceptance
+
+Date: October 6, 2026
+
+Source and APK:
+
+- Source commit: `3311f58`.
+- Application ID resolved from Gradle: `com.pocketai.offline`.
+- Version: `0.1.0`, versionCode `1`.
+- Local APK: `outputs/PocketAI-debug.apk`.
+- Local APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
+- Installed base APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
+- Device: OnePlus IN2021, Android 13, serial `204885a6`.
+
+Preparation results:
+
+- Device awake/unlocked: pass. `dumpsys window policy` showed `screenState=SCREEN_STATE_ON`, `interactiveState=INTERACTIVE_STATE_AWAKE`, and keyguard `showing=false`.
+- Installed app matches latest successful local debug APK: pass. The installed base APK checksum matched `outputs/PocketAI-debug.apk`.
+- Data-preserving reinstall: not performed because the installed APK already matched.
+- Existing imported model available: fail. The visible app state showed `No model selected`, and private app storage inspection showed no `files/models` directory and no `.gguf` under `files`.
+
+Evidence:
+
+- Screenshot: [task007c-no-model-selected.png](screenshots/task007c-no-model-selected.png).
+- Private file inspection with `run-as com.pocketai.offline find . -maxdepth 3 -type f` found `./files/profileInstalled` plus Room database files, but no DataStore model-selection file and no private GGUF.
+- `logcat -d -s InferenceEngineImpl:I` returned no native inference entries during this blocked attempt, which is consistent with no model load being attempted.
+
+Actions and pass/fail:
+
+- Establish baseline real summary: not run. Blocked because no existing imported model was available.
+- Save acceptance test record: not run.
+- Force-stop/relaunch model recognition: not run.
+- History record inspection after saved baseline: not run.
+- History access without native load: unverified. The required saved acceptance record could not be created first.
+- Post-relaunch inference: not run.
+- Subsequent loaded-model reuse: unverified.
+- Reboot persistence: not run.
+
+Observed issue:
+
+- The imported model expected for Task 007C is no longer present in app-private storage on the connected device. A likely contributing factor is that earlier connected-test runs installed/reinstalled test APKs during Task 007B; however, this acceptance report records only observed state, not a proven deletion cause.
+- Per the task instruction, no file picker import was started and no model/history files were deleted or modified.
+
 ## Known Limitations
 
 - The UI tests use synthetic Compose state and fakes. They do not validate native llama.cpp behavior or model quality.
