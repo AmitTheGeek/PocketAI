@@ -1,6 +1,6 @@
 # PocketAI Acceptance Report
 
-Date: October 5, 2026
+Date: October 6, 2026
 
 ## Task 006 Scope
 
@@ -103,6 +103,56 @@ Automated checks on October 6, 2026:
 - `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew :app:connectedDebugAndroidTest`: started 7 tests on the OnePlus IN2021 / Android 13. Multiple `SummaryReadingUiTest` cases failed with `No compose hierarchies found in the app`; the run then stopped making progress and was interrupted. Treat connected UI test validation as failed/pending, not accepted.
 
 Task 007 pending device acceptance:
+
+- [ ] Import/select once and summarise.
+- [ ] Force-stop and relaunch without clearing app data.
+- [ ] Confirm the model is recognised without opening the file picker.
+- [ ] Open History without loading the model.
+- [ ] Summarise successfully using the remembered file.
+- [ ] Repeat after device restart if available.
+
+## Task 007B Connected Test Diagnosis
+
+Root cause:
+
+- The aggregate `connectedDebugAndroidTest` failure remains separate: Gradle reaches `:llama-android-lib:connectedDebugAndroidTest`, whose upstream test APK lacks `androidx.test.runner.AndroidJUnitRunner`. The app-only command is the correct connected UI test command for PocketAI.
+- The app-only `No compose hierarchies found` failures were caused by the connected phone being locked/asleep, not by DataStore, model restore, or app startup. The earliest failing log showed `SummaryReadingUiTest.longSummaryFinalMarkerCanBeScrolledIntoView` starting, `androidx.activity.ComponentActivity` reaching `RESUMED`, then immediately moving to `PAUSED`/`STOPPED`. Device state inspection during diagnosis showed `mWakefulness=Dozing`, `screenState=SCREEN_STATE_OFF`, secure keyguard showing, and the Compose host `ComposeView` measured at `0x0`.
+- After waking/unlocking the phone, device state showed `mWakefulness=Awake`, keyguard not showing, and `SCREEN_STATE_ON`. No product or test-code changes were required.
+
+Exact commands and results on October 6, 2026:
+
+```sh
+/Users/batcomputer/Library/Android/sdk/platform-tools/adb -s 204885a6 shell dumpsys power
+/Users/batcomputer/Library/Android/sdk/platform-tools/adb -s 204885a6 shell dumpsys window
+```
+
+- Before unlock: confirmed asleep/locked state.
+- After unlock: confirmed awake/unlocked state.
+
+```sh
+JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.pocketai.offline.ui.SummaryReadingUiTest#longSummaryFinalMarkerCanBeScrolledIntoView \
+  -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+```
+
+- Result: passed. Gradle reported `Starting 1 tests on IN2021 - 13`, `Finished 1 tests on IN2021 - 13`, `BUILD SUCCESSFUL in 1m 2s`.
+
+```sh
+JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+```
+
+- Result: passed. Gradle reported `Starting 7 tests on IN2021 - 13`, `Finished 7 tests on IN2021 - 13`, `BUILD SUCCESSFUL in 56s`.
+- XML report: `SummaryReadingUiTest`, 7 tests, 0 failures, 0 errors, 0 skipped, total test time 8.69s.
+- Passing cases: long-summary final marker scroll, draft preservation, complete copy text, manual-scroll intent during refinement replacement, Cancel reachability, continuous synthetic streaming follow, and Jump to latest visibility.
+
+Actual device results:
+
+- OnePlus IN2021 / Android 13 app-only connected Compose suite: passed once the device was awake and unlocked.
+- No app source changes, skipped tests, sleeps, or weakened assertions were needed.
+- No model-quality or manual restoration checks were performed as part of this connected-test diagnosis.
+
+Task 007 manual model-restoration checks remain pending:
 
 - [ ] Import/select once and summarise.
 - [ ] Force-stop and relaunch without clearing app data.
