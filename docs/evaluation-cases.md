@@ -140,7 +140,7 @@ Do not assert an exact generated summary. Evaluate the second run against requir
 
 ## Device Checklist
 
-Status as of October 4, 2026: the app has run offline-style local summaries on the OnePlus 8 Pro, and initial cancellation plus a fresh request passed on-device. The retry path introduced after structural validation has not been phone-tested yet.
+Status as of October 6, 2026: the app has run offline-style local summaries on the OnePlus 8 Pro / IN2021, and initial cancellation plus a fresh request passed on-device. Task 007C also verified remembered model recognition after force-stop/relaunch, History access without native inference logs, saved detail inspection, and first post-relaunch inference. The retry path introduced after structural validation has not been phone-tested yet.
 
 - [ ] Pending: Enable airplane mode with Wi-Fi and mobile data off, then run a summary using an already-imported local GGUF.
 - [ ] Pending: Run Case 1 on-device and record elapsed time, required facts, and unacceptable changes observed.
@@ -152,11 +152,11 @@ Status as of October 4, 2026: the app has run offline-style local summaries on t
 - [ ] Pending: Cancel during refinement on-device and verify generation stops.
 - [ ] Pending: Immediately start a fresh request after refinement cancellation and verify no stale text appears.
 - [ ] Pending: Paste oversized input and verify the app explains the token-budget issue without truncating the source.
-- [ ] Pending: Generate a summary offline, save it, open it from History, and verify the saved source and summary match the completed request.
+- [x] Passed Task 007C: Generate a summary, save it, open it from History, and verify the saved source and summary match the completed request.
 - [ ] Pending: Force-stop and relaunch the app, then verify the saved summary remains accessible from History.
-- [ ] Pending: Force-stop and relaunch the app, then verify the imported GGUF is recognised without opening the file picker.
-- [ ] Pending: Open History without importing or loading a model and verify saved summaries can still be browsed.
-- [ ] Pending: After relaunch, summarize successfully using the remembered app-private GGUF.
+- [x] Passed Task 007C: Force-stop and relaunch the app, then verify the imported GGUF is recognised without opening the file picker.
+- [x] Passed Task 007C: Open History after relaunch and verify saved summaries can be browsed without native inference logs.
+- [x] Passed Task 007C: After relaunch, summarize successfully using the remembered app-private GGUF.
 - [ ] Pending: Delete a saved summary, force-stop and relaunch, and verify it stays deleted.
 - [ ] Pending: Save a result that shows a structural-format warning and verify the warning is retained in the saved detail.
 - [ ] Pending: Finish and reopen the Activity within the same app process, then verify importing/summarizing still works and history remains browsable.

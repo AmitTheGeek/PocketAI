@@ -102,13 +102,13 @@ Automated checks on October 6, 2026:
 - `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew connectedDebugAndroidTest`: failed in `:llama-android-lib:connectedDebugAndroidTest` before app tests. The library test APK crashed because `androidx.test.runner.AndroidJUnitRunner` was not found in `com.arm.aichat.test`.
 - `JAVA_HOME=$PWD/work/jdk17/Contents/Home ./gradlew :app:connectedDebugAndroidTest`: started 7 tests on the OnePlus IN2021 / Android 13. Multiple `SummaryReadingUiTest` cases failed with `No compose hierarchies found in the app`; the run then stopped making progress and was interrupted. Treat connected UI test validation as failed/pending, not accepted.
 
-Task 007 pending device acceptance:
+Task 007 pending device acceptance at the time of the Task 007 build. The later Task 007C section records the follow-up device results for model restoration.
 
-- [ ] Import/select once and summarise.
-- [ ] Force-stop and relaunch without clearing app data.
-- [ ] Confirm the model is recognised without opening the file picker.
-- [ ] Open History without loading the model.
-- [ ] Summarise successfully using the remembered file.
+- [x] Verified in Task 007C: Import/select once and summarise.
+- [x] Verified in Task 007C: Force-stop and relaunch without clearing app data.
+- [x] Verified in Task 007C: Confirm the model is recognised without opening the file picker.
+- [x] Verified in Task 007C: Open History without loading the model.
+- [x] Verified in Task 007C: Summarise successfully using the remembered file.
 - [ ] Repeat after device restart if available.
 
 ## Task 007B Connected Test Diagnosis
@@ -152,13 +152,13 @@ Actual device results:
 - No app source changes, skipped tests, sleeps, or weakened assertions were needed.
 - No model-quality or manual restoration checks were performed as part of this connected-test diagnosis.
 
-Task 007 manual model-restoration checks remain pending:
+Task 007 manual model-restoration checks after the connected-test diagnosis. The later Task 007C section records the follow-up device results for the force-stop/relaunch flow.
 
-- [ ] Import/select once and summarise.
-- [ ] Force-stop and relaunch without clearing app data.
-- [ ] Confirm the model is recognised without opening the file picker.
-- [ ] Open History without loading the model.
-- [ ] Summarise successfully using the remembered file.
+- [x] Verified in Task 007C: Import/select once and summarise.
+- [x] Verified in Task 007C: Force-stop and relaunch without clearing app data.
+- [x] Verified in Task 007C: Confirm the model is recognised without opening the file picker.
+- [x] Verified in Task 007C: Open History without loading the model.
+- [x] Verified in Task 007C: Summarise successfully using the remembered file.
 - [ ] Repeat after device restart if available.
 
 ## Task 007C Model Persistence Device Acceptance

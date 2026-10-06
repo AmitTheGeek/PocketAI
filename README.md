@@ -1,143 +1,177 @@
-# PocketAI Offline Android Prototype
+# PocketAI
 
-Offline summarisation prototype for Android 13 on arm64 devices such as the OnePlus 8 Pro.
+PocketAI is an offline Android summarisation MVP. It imports a user-downloaded GGUF model, runs llama.cpp locally on the phone, streams a short bullet summary, and lets the user explicitly save completed summaries for later reading.
 
-## Runtime Pin
+The current prototype targets a OnePlus 8 Pro / IN2021 with 12 GB RAM on Android 13. It is a focused engineering prototype, not a production app. The model is downloaded separately and imported by the user; after that, inference runs locally without cloud inference or login.
 
-- llama.cpp official Android example: `examples/llama.android`
-- llama.cpp tag: `b11379`
-- llama.cpp commit: `1537a0a8b2f8711d840878b0a0677ab2213c882c`
-- Source reference: https://github.com/ggml-org/llama.cpp/tree/1537a0a8b2f8711d840878b0a0677ab2213c882c/examples/llama.android
+## Screenshots
 
-The native wrapper is based on the official Android example and is patched for this prototype to use a 2048-token context, Qwen GGUF chat-template formatting through llama.cpp's Jinja chat formatter, per-request state reset so the app does not keep chat history, runtime prompt-token counting, explicit rejection of over-budget prompts, cancellation support, and recoverable cleanup after failed model loads.
+These are real device screenshots from Task 007C acceptance on a OnePlus IN2021 / Android 13 using non-personal test text.
 
-Native changes are reproducible from tracked source:
+| Remembered model on Input | Saved summary detail |
+| --- | --- |
+| ![PocketAI Input screen showing the remembered Qwen GGUF model selected after relaunch.](docs/screenshots/task007c-model-available-after-relaunch.png) | ![PocketAI saved summary detail showing source text, saved summary, elapsed time, and a format warning.](docs/screenshots/task007c-saved-history-detail.png) |
+
+A completed Result-screen screenshot was not captured. ADB screenshot execution was blocked after the post-relaunch summary completed, so the acceptance report records that result through the UI hierarchy, logs, and observed elapsed time instead of a screenshot.
+
+## Main Capabilities
+
+- Separate Compose Input and Result screens for editing and reading.
+- Local CPU inference through the official llama.cpp Android example.
+- Qwen/Qwen2.5-1.5B-Instruct-GGUF with `qwen2.5-1.5b-instruct-q4_k_m.gguf`.
+- Correct Qwen chat-template formatting through llama.cpp's Jinja chat formatter.
+- User imports the downloaded GGUF through Android's file picker; the app copies it to app-private storage.
+- Remembered model selection with Preferences DataStore, then load-on-demand when summarisation starts.
+- Streaming output, elapsed time, cancellation, and a guarded fresh request after cancellation.
+- Runtime tokenizer-based input-budget validation for the 2048-token context.
+- Bounded summary-format retry: validate 1-3 bullets, retry once, and warn if the retry still does not match.
+- Explicit saved summaries with Room: History list, saved detail, Copy, and Delete.
+- No bundled model files and no app-declared `INTERNET` permission in the verified debug build.
+
+## How It Works
+
+```mermaid
+flowchart TD
+    Input["Compose Input screen"] --> VM["MainViewModel\nStateFlow UI state and actions"]
+    Result["Compose Result screen"] --> VM
+    HistoryUi["History and Detail screens"] --> VM
+
+    VM --> Coordinator["SummaryGenerationCoordinator\nprepare, stream, validate, retry once"]
+    Coordinator --> Validator["SummaryFormatValidator\npure structural check"]
+    Coordinator --> Engine["SummarizationEngine\nlocal model execution"]
+
+    Engine --> Runtime["App-owned llama.cpp runtime\npatched official Android example"]
+    Engine --> PrivateModel["App-private GGUF file"]
+
+    VM --> SelectionRepo["ModelSelectionRepository\nPreferences DataStore metadata"]
+    SelectionRepo --> PrivateModel
+
+    VM --> HistoryRepo["SummaryHistoryRepository"]
+    HistoryRepo --> Room["Room database\nsaved source/result snapshots"]
+```
+
+Four design decisions matter most:
+
+- **Application-owned native runtime versus screen state:** `PocketAiContainer` owns the llama.cpp runtime for the app process. The ViewModel cancels requests and owns UI/session state, but ViewModel disposal does not destroy the upstream native singleton.
+- **Durable model selection versus loaded RAM state:** DataStore remembers only the app-private filename, display name, and size. It does not store a `Ready` flag. Startup can show a selected model on disk without loading native inference, and the first summary loads it on demand.
+- **Structural validation versus semantic evaluation:** the validator checks only bullet shape: 1-3 non-empty bullet items with no extra prose. It does not prove factual accuracy. Quality is handled by rubric-based manual evaluation cases.
+- **Immutable saved snapshots:** saving stores the completed request's source snapshot, exact final summary, duration, refinement flag, warning, and available model identification. It does not save whatever text happens to be in the editor later.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
+
+## Setup, Build, And Run
+
+### Requirements
+
+- JDK 17.
+- Android SDK with compile SDK 36 and target SDK 36 support.
+- Android NDK `29.0.13113456`.
+- CMake `3.31.6`.
+- Gradle wrapper `8.14.3`.
+- Android Gradle Plugin `8.13.2`.
+- Kotlin `2.3.0`.
+- A physical or virtual Android device at API 33 or newer for install/testing. The current target is arm64-v8a.
+
+### Native Runtime Setup
+
+PocketAI uses the official llama.cpp Android example at a pinned revision:
+
+- Upstream path: `examples/llama.android`
+- Commit: `1537a0a8b2f8711d840878b0a0677ab2213c882c`
+- Reference: `https://github.com/ggml-org/llama.cpp/tree/1537a0a8b2f8711d840878b0a0677ab2213c882c/examples/llama.android`
+
+The checkout under `work/llama.cpp` is generated local state and is not the source of truth. Recreate it from the pinned commit and tracked patch:
 
 ```sh
 ./scripts/setup-llama-cpp.sh
 ```
 
-The script creates or reuses `work/llama.cpp`, checks out the pinned commit, and applies `patches/llama-cpp-pocketai.patch`. The patch is stored as a zero-context diff and applied with `git apply --unidiff-zero`, so it is deterministic for the pinned upstream revision while keeping the tracked patch file whitespace-clean. The ignored `work/` directory is generated local state and is not the source of truth. Task 004 rechecked the patch mechanism against the local pinned checkout; it did not perform a fresh network clone.
+The script clones or reuses llama.cpp, checks out the pinned commit, and applies [patches/llama-cpp-pocketai.patch](patches/llama-cpp-pocketai.patch). The patch adds the prototype-specific Android hooks: 2048-token context, Qwen chat-template formatting, per-request state reset, tokenizer-based prompt counting, cancellation, and recoverable cleanup around failed loads.
 
-## Model
+### Model
 
-Download this exact GGUF before testing:
+Download this exact GGUF separately:
 
 https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 
-Do not place the model in the repository, `assets/`, `res/`, or the APK. The app imports the file through Android's file picker and copies it to app-private storage with a unique internal filename while preserving the original display filename in the UI.
+Do not commit the model, place it in `assets/` or `res/`, or include it in the APK. Install the app, launch PocketAI, tap Import or Change model, and select the downloaded GGUF through Android's file picker. PocketAI copies it to app-private storage with a unique internal filename.
 
-## Build Dependencies
+### Build And Unit Test
 
-- JDK 17. Use a real JDK 17 runtime; the Android Studio bundled runtime on this machine reported Java `25.0.3` and failed Gradle/Kotlin script evaluation.
-- Gradle wrapper 8.14.3
-- Android Gradle Plugin 8.13.2
-- Kotlin 2.3.0
-- compileSdk 36, targetSdk 36, minSdk 33
-- Android NDK 29.0.13113456
-- CMake 3.31.6
-- Compose UI/Foundation 1.7.3
-- Material 3 1.3.0
-- Lifecycle ViewModel 2.8.3
-- Lifecycle Runtime Compose 2.8.3
-- Kotlin coroutines 1.10.2
-- Room 2.8.4 with KAPT and exported schemas
-- Robolectric 4.13 for JVM Room/ViewModel tests
-
-## Build
-
-After cloning the repository, fetch and patch the pinned llama.cpp Android example:
-
-```sh
-./scripts/setup-llama-cpp.sh
-```
-
-Then build with JDK 17:
+Use a normal JDK 17 path for `JAVA_HOME`:
 
 ```sh
 JAVA_HOME=/path/to/jdk17 ./gradlew testDebugUnitTest
 JAVA_HOME=/path/to/jdk17 ./gradlew assembleDebug
 ```
 
-The checked workspace includes a local JDK used for the latest build:
-
-```sh
-JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew testDebugUnitTest
-JAVA_HOME="$PWD/work/jdk17/Contents/Home" ./gradlew assembleDebug
-```
-
-The debug APK is generated at:
+The debug APK is generated by Gradle at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The refreshed handoff APK is copied to:
+If you want a handoff APK path, create it from your local build output:
 
-```text
-outputs/PocketAI-debug.apk
+```sh
+mkdir -p outputs
+cp app/build/outputs/apk/debug/app-debug.apk outputs/PocketAI-debug.apk
 ```
 
-## Setup On Device
+The repository does not require a prebuilt APK to exist in a fresh clone.
 
-1. Download `qwen2.5-1.5b-instruct-q4_k_m.gguf` from the link above to local device storage.
-2. Install the debug APK.
-3. Launch PocketAI.
-4. Tap Import GGUF and select the downloaded model.
-5. Wait for the import and load state to finish. The app remembers the app-private copy after a successful import/load.
-6. Edit or keep the sample paragraph on the Input screen, then tap Summarize.
-7. Confirm the app opens the Result screen before completion and streams output there.
-8. Use Cancel to stop an in-progress generation while remaining on Result, or use Back during active work to stop and return to Input.
-9. Tap Copy, Save, or Edit source after a completed result.
-10. Open History, open the saved detail, copy the summary if needed, and delete saved records when testing deletion.
-11. After relaunch, the remembered private model should appear without opening the file picker. The first summary after process death may show `Loading model...` before Result opens.
+### Connected UI Tests
 
-## Airplane-Mode Test
+Run app-only connected tests with:
 
-1. Install the APK while online if needed.
-2. Enable airplane mode and leave Wi-Fi and mobile data off.
-3. Launch PocketAI.
-4. Import the already-downloaded GGUF from local storage.
-5. Summarize the sample paragraph.
-6. Confirm streamed output appears, elapsed time updates, and Cancel stops generation.
-7. Save the completed result and reopen it from History.
-8. Force-stop and relaunch without clearing app data.
-9. Confirm the remembered model is recognised without opening the file picker.
-10. Summarize again and confirm no network prompt or login is required.
+```sh
+JAVA_HOME=/path/to/jdk17 ./gradlew :app:connectedDebugAndroidTest
+```
 
-## Local Persistence
+Keep the device awake and unlocked. A previous failure with `No compose hierarchies found` was traced to the phone being asleep/locked, not to app startup.
 
-Saved summaries use Room database `PocketAiDatabase`, version 1. Schemas are exported under `app/schemas`.
+Do not use aggregate `connectedDebugAndroidTest` as the PocketAI app signal. It also reaches the vendored `:llama-android-lib:connectedDebugAndroidTest`, whose upstream test APK lacked `androidx.test.runner.AndroidJUnitRunner` during Task 007B.
 
-Saved fields:
+### Manual Device Flow
 
-- ID.
-- Original source text snapshot.
-- Exact final summary text.
-- Local save timestamp.
-- Total generation duration.
-- Whether refinement occurred.
-- Final structural-format warning, if any.
-- Imported model filename and byte size when available.
+1. Install the debug APK.
+2. Download the GGUF to device storage.
+3. Launch PocketAI and import the model.
+4. Edit the Input text and tap Summarise.
+5. Confirm Result opens before completion and streamed text appears there.
+6. Use Cancel to stop generation, or Back during active work to stop and return to Input.
+7. After completion, use Copy, Save, or Edit source.
+8. Open History, inspect a saved summary, copy it if needed, and delete saved records when testing deletion.
+9. Force-stop and relaunch without clearing data. The selected model should be recognised without opening the file picker. The first post-relaunch summary loads the remembered private model on demand.
 
-Model binaries are not stored in Room. Model selection metadata uses Preferences DataStore and stores only the app-private relative filename, original display name when known, and file size. The manifest currently sets `android:allowBackup="false"`, so this app is not opted into Android Auto Backup. Saved summaries and imported model files are still local app-private data and are removed if app data is cleared or the app is uninstalled.
+## Verification And Known Limitations
 
-## Evaluation Cases
+Recorded verification:
 
-Five short rubric-based evaluation cases are documented in `docs/evaluation-cases.md`. They cover deadlines, negation, numerical facts, uncertain plans, and instruction-like text embedded inside source text. The same document includes a device checklist for airplane mode, all five cases, refinement, cancellation during refinement, oversized input, saving, relaunch persistence, history without model loading, deletion, warned-result retention, Activity recreation, failed-load recovery, same-filename model replacement, and system Back routing.
+- Task 007 code build, source commit `3311f58`, on October 6, 2026: `testDebugUnitTest` passed and `assembleDebug` passed.
+- Task 007 debug APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
+- APK scan on October 6, 2026 found no `.gguf`, `.safetensors`, Qwen, or model binary assets.
+- Source and built APK permission checks found no `android.permission.INTERNET`; the debug APK contained only AndroidX's generated app-private dynamic receiver permission.
+- App-only connected Compose suite on OnePlus IN2021 / Android 13: 7 tests passed after the device was awake and unlocked.
+- Task 007C device acceptance: model recognised after force-stop, no re-import required, History opened without native inference logs, and post-relaunch inference completed using the remembered file.
+- Observed Task 007C elapsed times: 7.1s baseline before force-stop, and 9.9s for the first post-relaunch summary. These are individual observations, not a benchmark.
 
-## Architecture Notes
+Known limitations and unverified areas:
 
-See `PROJECT_BRIEF.md` for scope and exclusions, and `ARCHITECTURE.md` for responsibilities, state, cancellation, prompt budget handling, Room persistence, backup policy, app-owned native runtime policy, failed-load recovery, and retry trade-offs.
+- Summary format validation is structural only. It does not validate factual accuracy.
+- The model can still return too many bullets after the one retry; PocketAI then keeps the unmodified output and shows a format warning.
+- The completed Result-screen screenshot from Task 007C is missing because screenshot capture was blocked after completion.
+- A second post-relaunch request reusing the already-loaded model remains unverified.
+- Device-restart persistence remains unverified.
+- Remaining manual lifecycle, accessibility, same-filename replacement, failed-load recovery, oversized-input, refinement-cancellation, and five-case quality checks are tracked in [docs/acceptance-report.md](docs/acceptance-report.md) and [docs/evaluation-cases.md](docs/evaluation-cases.md).
+- No process-death restoration of an active generation is implemented or claimed.
+- Local app-private data is removed if app data is cleared or the app is uninstalled. The manifest currently sets `android:allowBackup="false"`.
 
-## Actual Build Result
+## Deeper Documentation
 
-Task 004/005 baseline: `JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` and `assembleDebug` succeeded on October 5, 2026, and `outputs/PocketAI-debug.apk` was refreshed at that time.
-
-Task 007 status: remembered-model selection was added and verified with `JAVA_HOME=work/jdk17/Contents/Home ./gradlew testDebugUnitTest` and `assembleDebug` on October 6, 2026. `outputs/PocketAI-debug.apk` was refreshed with SHA-256 `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
-
-Physical-device smoke testing was previously performed on the connected OnePlus 8 Pro / IN2021 on October 4, 2026: APK install succeeded, the app launched, the GGUF was imported into app-private storage, and real summary runs took about 4-6 seconds. Initial cancellation followed by a fresh request passed on-device. The user later confirmed baseline offline/airplane-mode inference worked on the same phone.
-
-The structural validator, one-retry coordinator, Room persistence, ViewModel save orchestration, Task 004 lifecycle/import/navigation recovery changes, Task 006 split-screen navigation fakes, and Task 007 remembered-model selection tests pass JVM unit tests. The latest remembered-model relaunch flow, connected UI tests, failed-load recovery, same-filename replacement, saved-history flow, cancellation during refinement, oversized input, and the full five-case checklist have not yet been validated on the phone.
-
-The source manifest declares no permissions. On October 6, 2026, the merged debug APK manifest contained AndroidX's generated app-private dynamic receiver permission, but no `android.permission.INTERNET`. The refreshed APK archive scan found no `.gguf`, `.safetensors`, Qwen, or model binary assets.
+- [Project brief](PROJECT_BRIEF.md): MVP scope, exclusions, and device evidence.
+- [Architecture](ARCHITECTURE.md): responsibilities, state model, native ownership, cancellation, prompt budget, persistence, and retry policy.
+- [Engineering case study](docs/engineering-case-study.md): concrete evolution of the prototype and trade-offs.
+- [UI design notes](docs/ui-design.md): split Input/Result layout, scroll ownership, accessibility notes, and UI regression coverage.
+- [Evaluation cases](docs/evaluation-cases.md): rubric-based manual cases for deadlines, negation, numbers, uncertainty, and embedded instructions.
+- [Acceptance report](docs/acceptance-report.md): dated build, connected-test, and device acceptance evidence.

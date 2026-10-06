@@ -36,6 +36,8 @@ On October 4, 2026, the prototype was installed and run on the connected OnePlus
 
 The user later confirmed baseline offline/airplane-mode inference worked on the OnePlus 8 Pro. The structural validator, one-retry coordinator, Room-backed save/history logic, and Task 004 lifecycle/import/navigation recovery changes pass JVM unit tests.
 
-Latest feature acceptance is still pending on the phone: retry during refinement, remembered model after force-stop/relaunch, saved-history flow, lifecycle reopen, failed-load recovery, same-filename model replacement, system Back routing, and the full manual evaluation checklist have not yet been validated on-device.
+Task 007 added remembered-model selection in source. JVM unit tests and a debug APK build passed on October 6, 2026. App-only connected Compose UI tests passed on the OnePlus IN2021 after the device was awake and unlocked.
 
-Task 007 adds remembered-model selection in source. JVM unit tests and a debug APK build passed on October 6, 2026. Connected UI tests and physical-device acceptance for the remembered-model relaunch flow are still pending.
+Task 007C physical-device acceptance verified model recognition after force-stop/relaunch, no re-import, History access without native inference logs, and first post-relaunch inference using the remembered file. Observed elapsed times were 7.1s before force-stop and 9.9s for the first post-relaunch summary. These are individual observations, not a general benchmark.
+
+Remaining phone checks include retry during refinement, cancellation during refinement, lifecycle reopen, failed-load recovery with a real invalid GGUF, same-filename model replacement, system Back routing, second post-relaunch loaded-model reuse, device-restart persistence, and the full manual quality checklist.
