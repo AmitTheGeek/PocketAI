@@ -167,7 +167,8 @@ Date: October 6, 2026
 
 Source and APK:
 
-- Source commit: `3311f58`.
+- Source commit for latest code under test: `3311f58`.
+- Documentation commit at the time of the follow-up device run: `8881766`.
 - Application ID resolved from Gradle: `com.pocketai.offline`.
 - Version: `0.1.0`, versionCode `1`.
 - Local APK: `outputs/PocketAI-debug.apk`.
@@ -175,20 +176,20 @@ Source and APK:
 - Installed base APK SHA-256: `06872938c76c2dc8b414af351ad299765b833ecdaa49a1b67f411023815dfa92`.
 - Device: OnePlus IN2021, Android 13, serial `204885a6`.
 
-Preparation results:
+Initial preparation results:
 
 - Device awake/unlocked: pass. `dumpsys window policy` showed `screenState=SCREEN_STATE_ON`, `interactiveState=INTERACTIVE_STATE_AWAKE`, and keyguard `showing=false`.
 - Installed app matches latest successful local debug APK: pass. The installed base APK checksum matched `outputs/PocketAI-debug.apk`.
 - Data-preserving reinstall: not performed because the installed APK already matched.
 - Existing imported model available: fail. The visible app state showed `No model selected`, and private app storage inspection showed no `files/models` directory and no `.gguf` under `files`.
 
-Evidence:
+Initial evidence:
 
 - Screenshot: [task007c-no-model-selected.png](screenshots/task007c-no-model-selected.png).
 - Private file inspection with `run-as com.pocketai.offline find . -maxdepth 3 -type f` found `./files/profileInstalled` plus Room database files, but no DataStore model-selection file and no private GGUF.
 - `logcat -d -s InferenceEngineImpl:I` returned no native inference entries during this blocked attempt, which is consistent with no model load being attempted.
 
-Actions and pass/fail:
+Initial actions and pass/fail:
 
 - Establish baseline real summary: not run. Blocked because no existing imported model was available.
 - Save acceptance test record: not run.
@@ -203,6 +204,19 @@ Observed issue:
 
 - The imported model expected for Task 007C is no longer present in app-private storage on the connected device. A likely contributing factor is that earlier connected-test runs installed/reinstalled test APKs during Task 007B; however, this acceptance report records only observed state, not a proven deletion cause.
 - Per the task instruction, no file picker import was started and no model/history files were deleted or modified.
+
+Follow-up run after user re-imported the model:
+
+- Private app storage then contained `files/models/3bffea89-0ef8-40e4-8f47-f0e9464611a3-qwen2.5-1.5b-instruct-q4_k_m.gguf` plus `files/datastore/model_selection.preferences_pb`.
+- Baseline real summary before force-stop: pass. The app showed `Model ready`, completed the non-personal acceptance paragraph in `7.1s elapsed`, and saved the result once. The final result had a structural format warning because the model returned 4 bullets; saving warned results is expected behavior.
+- Force-stop/relaunch without clearing data: pass. After `am force-stop com.pocketai.offline` and relaunch, the Input screen showed `Model selected` with `qwen2.5-1.5b-instruct-q4_k_m.gguf  1.04 GB` and did not open the file picker.
+- Model recognised after force-stop: pass. Evidence: [task007c-model-available-after-relaunch.png](screenshots/task007c-model-available-after-relaunch.png).
+- Saved record in History/Detail: pass. The saved detail displayed the original source text, saved summary, model name, `7.1s total with refinement`, and the retained format warning. Evidence: [task007c-saved-history-detail.png](screenshots/task007c-saved-history-detail.png).
+- History accessible without native load: pass. After logcat was cleared and the app relaunched, opening History and the saved detail produced no `InferenceEngineImpl` log entries before any post-relaunch summary was started.
+- First post-relaunch summary using the remembered file: pass. The same acceptance paragraph completed in `9.9s elapsed` without re-importing or copying a model. The observed summary preserved Monday, Amit, `by Friday`, offline availability, and cloud exclusion, again with a 4-bullet format warning.
+- Screenshot of the completed post-relaunch summary: not captured. ADB screenshot execution was blocked by the execution approval limit after the summary completed; the UI hierarchy had already shown the completed output and elapsed time.
+- Subsequent request reuse of the already-loaded model: unverified. The run stopped after the first post-relaunch completion because further ADB execution was blocked.
+- Reboot persistence: not run.
 
 ## Known Limitations
 
